@@ -1,0 +1,122 @@
+{
+  "fill-specializations" : [
+    {
+      "value" : "system-dark"
+    },
+    {
+      "appearance" : "dark",
+      "value" : "system-dark"
+    }
+  ],
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "glass" : true,
+          "hidden" : false,
+          "image-name" : "mumble-sign 2.svg",
+          "name" : "mumble-sign",
+          "position" : {
+            "scale" : 2.13,
+            "translation-in-points" : [
+              -2.211420532379975,
+              -4.672770482974329
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.5
+      }
+    },
+    {
+      "layers" : [
+        {
+          "image-name" : "mumble-mic.svg",
+          "name" : "mumble-mic",
+          "position" : {
+            "scale" : 2.13,
+            "translation-in-points" : [
+              -2.211420532379975,
+              -4.672770482974329
+            ]
+          }
+        },
+        {
+          "blend-mode-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : "normal"
+            }
+          ],
+          "image-name" : "mumble-cups.svg",
+          "name" : "mumble-cups",
+          "position" : {
+            "scale" : 2.13,
+            "translation-in-points" : [
+              -2.211420532379975,
+              -4.672770482974329
+            ]
+          }
+        },
+        {
+          "glass" : true,
+          "image-name" : "mumble-headset 3.svg",
+          "name" : "mumble-headset",
+          "position" : {
+            "scale" : 2.13,
+            "translation-in-points" : [
+              -2.211420532379975,
+              -4.672770482974329
+            ]
+          }
+        }
+      ],
+      "lighting" : "individual",
+      "shadow" : {
+        "kind" : "layer-color",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.5
+      }
+    },
+    {
+      "layers" : [
+        {
+          "blend-mode" : "overlay",
+          "glass" : true,
+          "image-name" : "mumble-background 3.svg",
+          "name" : "mumble-background 3",
+          "position" : {
+            "scale" : 2.13,
+            "translation-in-points" : [
+              1.9154103619622447,
+              0.8745128736370589
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.5
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [
+      "watchOS"
+    ],
+    "squares" : "shared"
+  }
+}

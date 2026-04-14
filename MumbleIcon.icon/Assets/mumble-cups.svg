@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="0 0 400 400">
+  <title>Mumble cups layer</title>
+  <g id="cups">
+    <path
+      d="m 288.25,148.4375 0,169.375 C 321.70534,314.14251 348,277.6333 348,233.125 c 0,-44.5083 -26.29466,-81.01751 -59.75,-84.6875 z"
+      transform="matrix(1.05,0,0,1.05,-5.3555131,0.50955272)"
+      style="fill:#000000;fill-opacity:1;fill-rule:evenodd;stroke:none" />
+    <path
+      d="m 106.22355,149.3374 0,169.375 c -33.455343,-3.66999 -59.750003,-40.1792 -59.750003,-84.6875 0,-44.5083 26.29466,-81.01751 59.750003,-84.6875 z"
+      transform="matrix(1.05,0,0,1.05,-5.3555131,0.50955272)"
+      style="fill:#000000;fill-opacity:1;fill-rule:evenodd;stroke:none;display:inline" />
+    <rect
+      x="274.71799"
+      y="146.09026"
+      width="13.329355"
+      height="171.94623"
+      rx="3.8877287"
+      ry="3.5400696"
+      transform="matrix(1.0433338,0,0,1.0500168,-4.6562937,0.09487302)"
+      style="fill:#000000;fill-opacity:1;fill-rule:evenodd;stroke:none;stroke-width:1.05377054" />
+    <rect
+      x="106.56075"
+      y="147.08498"
+      width="13.063269"
+      height="171.95677"
+      rx="3.8101201"
+      ry="3.5402865"
+      transform="matrix(1.0433338,0,0,1.0500168,-3.8347589,0.09487302)"
+      style="fill:#000000;fill-opacity:1;fill-rule:evenodd;stroke:none;stroke-width:1.04323161;display:inline" />
+  </g>
+</svg>
