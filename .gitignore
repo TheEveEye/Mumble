@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+
+# Xcode user state
+xcuserdata/
+*.xcuserdatad/
+*.xcuserstate
+
+# Build artifacts
+build/
+DerivedData/
+*.xcresult
+
+# SwiftPM
+.build/
+Package.resolved
+
+# Local reference codebase used only for development lookup
+MumbleReference/
