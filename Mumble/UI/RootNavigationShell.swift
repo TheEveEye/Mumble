@@ -247,6 +247,17 @@ struct RootNavigationShell: View {
         case .certificateTrustRequired(let challenge):
             appendLog("Certificate trust confirmation required for \(challenge.endpointDescription).")
             certificateTrustPrompt = challenge
+        case .reconnecting(let reason, let attempt, let maximumAttempts, let delay):
+            certificateTrustPrompt = nil
+            passwordPromptContext = nil
+            currentSessionID = nil
+            userSnapshot = []
+            isLoadingChannels = channelSnapshot.isEmpty
+            connectionStatus = "Reconnecting to \(serverDisplayName)"
+            appendLog(reason)
+            appendLog(
+                "Reconnecting to \(serverDisplayName) in \(formattedReconnectDelay(delay)) (attempt \(attempt) of \(maximumAttempts))."
+            )
         case .synchronized(let welcomeText, let synchronizedSessionID):
             isLoadingChannels = false
             currentSessionID = synchronizedSessionID
@@ -362,6 +373,11 @@ struct RootNavigationShell: View {
         } catch {
             dependencies.logger.error("Failed to remove remembered password: \(error.localizedDescription)")
         }
+    }
+
+    private func formattedReconnectDelay(_ delay: TimeInterval) -> String {
+        let roundedDelay = Int(delay.rounded())
+        return roundedDelay == 1 ? "1 second" : "\(roundedDelay) seconds"
     }
 }
 

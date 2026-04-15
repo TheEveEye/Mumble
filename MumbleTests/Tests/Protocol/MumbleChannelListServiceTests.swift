@@ -107,4 +107,15 @@ struct MumbleChannelListServiceTests {
         #expect(tree.first?.channelOccupancyStates.map(\.0) == [0, 1, 3, 2])
         #expect(tree.first?.channelOccupancyStates.map(\.1) == [true, true, true, false])
     }
+
+    @Test
+    func reconnectPolicyUsesBoundedExponentialBackoff() {
+        #expect(MumbleReconnectPolicy.maximumAttempts == 5)
+        #expect(MumbleReconnectPolicy.delay(forAttempt: 1) == 1)
+        #expect(MumbleReconnectPolicy.delay(forAttempt: 2) == 2)
+        #expect(MumbleReconnectPolicy.delay(forAttempt: 3) == 4)
+        #expect(MumbleReconnectPolicy.delay(forAttempt: 4) == 8)
+        #expect(MumbleReconnectPolicy.delay(forAttempt: 5) == 15)
+        #expect(MumbleReconnectPolicy.delay(forAttempt: 6) == 15)
+    }
 }

@@ -46,6 +46,7 @@ struct MumbleUser: Identifiable, Equatable, Hashable, Sendable {
 enum MumbleChannelListEvent: Sendable {
     case log(String)
     case certificateTrustRequired(MumbleCertificateTrustChallenge)
+    case reconnecting(reason: String, attempt: Int, maximumAttempts: Int, delay: TimeInterval)
     case synchronized(welcomeText: String?, currentSessionID: UInt32?)
     case channelsUpdated([MumbleChannel])
     case usersUpdated([MumbleUser])
@@ -190,6 +191,15 @@ struct MumbleUserStateMessage {
 
 struct MumblePermissionDeniedMessage {
     let reason: String?
+}
+
+enum MumbleReconnectPolicy {
+    static let maximumAttempts = 5
+
+    static func delay(forAttempt attempt: Int) -> TimeInterval {
+        let normalizedAttempt = max(attempt, 1)
+        return min(pow(2.0, Double(normalizedAttempt - 1)), 15)
+    }
 }
 
 enum MumbleSessionPayloads {
@@ -582,16 +592,21 @@ private final class MumbleChannelListClient {
     private let trustedCertificateStore: TrustedCertificateStore
     private let onEvent: @Sendable (MumbleChannelListEvent) -> Void
     private let queue: DispatchQueue
-    private var connection: NWConnection!
+    private var connection: NWConnection?
+    private var connectionGeneration = 0
 
     private var receiveBuffer = Data()
     private var channels: [UInt32: MumbleChannel] = [:]
     private var users: [UInt32: MumbleUser] = [:]
     private var currentSessionID: UInt32?
     private var pingTimer: DispatchSourceTimer?
+    private var reconnectTimer: DispatchSourceTimer?
     private var isUserInitiatedCancellation = false
     private var hasFinished = false
+    private var reconnectAttempt = 0
+    private var hasSynchronized = false
     private var pendingCertificateTrustChallenge: PendingCertificateTrustChallenge?
+    private var temporarilyTrustedCertificateFingerprintSHA256: String?
 
     init(
         target: MumbleConnectionTarget,
@@ -604,35 +619,12 @@ private final class MumbleChannelListClient {
         self.trustedCertificateStore = trustedCertificateStore
         self.onEvent = onEvent
         queue = DispatchQueue(label: "dev.kiwiapps.Mumble.protocol.channel-list.\(UUID().uuidString)")
-
-        let tlsOptions = NWProtocolTLS.Options()
-        sec_protocol_options_set_verify_block(
-            tlsOptions.securityProtocolOptions,
-            { [weak self] _, trust, complete in
-                self?.evaluateServerTrust(trust, completion: complete)
-            },
-            queue
-        )
-
-        let tcpOptions = NWProtocolTCP.Options()
-        tcpOptions.noDelay = true
-
-        let parameters = NWParameters(tls: tlsOptions, tcp: tcpOptions)
-        parameters.allowLocalEndpointReuse = true
-
-        connection = NWConnection(
-            host: NWEndpoint.Host(target.host),
-            port: NWEndpoint.Port(rawValue: UInt16(target.port)) ?? 64738,
-            using: parameters
-        )
     }
 
     func start() {
-        connection.stateUpdateHandler = { [weak self] state in
-            self?.handleState(state)
+        queue.async { [weak self] in
+            self?.startConnectionAttempt()
         }
-
-        connection.start(queue: queue)
     }
 
     func cancel(isUserInitiated: Bool) {
@@ -645,8 +637,11 @@ private final class MumbleChannelListClient {
                 isUserInitiatedCancellation = true
             }
 
+            hasFinished = true
+            pendingCertificateTrustChallenge = nil
             stopPingLoop()
-            connection.cancel()
+            stopReconnectLoop()
+            teardownCurrentConnection()
         }
     }
 
@@ -684,6 +679,8 @@ private final class MumbleChannelListClient {
             pendingCertificateTrustChallenge = nil
 
             if accept {
+                temporarilyTrustedCertificateFingerprintSHA256 = pendingChallenge.challenge.fingerprintSHA256
+
                 if remember {
                     let challenge = pendingChallenge.challenge
                     let completion = pendingChallenge.completion
@@ -706,33 +703,90 @@ private final class MumbleChannelListClient {
                     pendingChallenge.completion(true)
                 }
             } else {
-                emit(.log("Certificate trust denied for \(target.endpointDescription)."))
                 pendingChallenge.completion(false)
+                finish(with: .failed("Certificate trust denied for \(target.endpointDescription).", nil))
             }
         }
     }
 
-    private func handleState(_ state: NWConnection.State) {
+    private func startConnectionAttempt() {
+        guard !hasFinished else {
+            return
+        }
+
+        stopReconnectLoop()
+        stopPingLoop()
+        pendingCertificateTrustChallenge = nil
+        receiveBuffer.removeAll(keepingCapacity: true)
+        channels = [:]
+        users = [:]
+        currentSessionID = nil
+        hasSynchronized = false
+
+        let connection = makeConnection()
+        self.connection = connection
+        connectionGeneration += 1
+        let generation = connectionGeneration
+
+        connection.stateUpdateHandler = { [weak self] state in
+            self?.handleState(state, generation: generation)
+        }
+
+        connection.start(queue: queue)
+    }
+
+    private func makeConnection() -> NWConnection {
+        let tlsOptions = NWProtocolTLS.Options()
+        sec_protocol_options_set_verify_block(
+            tlsOptions.securityProtocolOptions,
+            { [weak self] _, trust, complete in
+                self?.evaluateServerTrust(trust, completion: complete)
+            },
+            queue
+        )
+
+        let tcpOptions = NWProtocolTCP.Options()
+        tcpOptions.noDelay = true
+
+        let parameters = NWParameters(tls: tlsOptions, tcp: tcpOptions)
+        parameters.allowLocalEndpointReuse = true
+
+        return NWConnection(
+            host: NWEndpoint.Host(target.host),
+            port: NWEndpoint.Port(rawValue: UInt16(target.port)) ?? 64738,
+            using: parameters
+        )
+    }
+
+    private func handleState(_ state: NWConnection.State, generation: Int) {
+        guard generation == connectionGeneration else {
+            return
+        }
+
         switch state {
         case .ready:
             logger.info("TCP session ready for \(target.endpointDescription)")
             emit(.log("Secure connection established to \(target.endpointDescription)."))
             sendInitialHandshake()
             startPingLoop()
-            receiveNextChunk()
+            receiveNextChunk(generation: generation)
         case .failed(let error):
-            finish(with: .failed("Failed to connect to \(target.endpointDescription): \(error.localizedDescription)", nil))
+            handleTransportInterruption(
+                reason: "Failed to connect to \(target.endpointDescription): \(error.localizedDescription)",
+                generation: generation
+            )
         case .cancelled:
             stopPingLoop()
 
-            guard !hasFinished else {
+            guard generation == connectionGeneration, !hasFinished else {
                 return
             }
 
-            hasFinished = true
-
             if !isUserInitiatedCancellation {
-                emit(.disconnected("Disconnected from \(target.label)."))
+                handleTransportInterruption(
+                    reason: "Disconnected from \(target.label).",
+                    generation: generation
+                )
             }
         default:
             break
@@ -764,6 +818,11 @@ private final class MumbleChannelListClient {
             }
 
             let failureDescription = (trustError as Error?)?.localizedDescription ?? "The certificate could not be verified by macOS."
+            if temporarilyTrustedCertificateFingerprintSHA256 == certificateMetadata.fingerprintSHA256 {
+                completion(true)
+                return
+            }
+
             let isAlreadyTrusted = (try? await trustedCertificateStore.isTrusted(
                 host: target.host,
                 port: target.port,
@@ -816,6 +875,7 @@ private final class MumbleChannelListClient {
     }
 
     private func startPingLoop() {
+        stopPingLoop()
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + .seconds(15), repeating: .seconds(15))
         timer.setEventHandler { [weak self] in
@@ -836,6 +896,10 @@ private final class MumbleChannelListClient {
     }
 
     private func sendMessage(type: MumbleTCPMessageType, payload: Data) {
+        guard let connection else {
+            return
+        }
+
         var packet = Data(count: 6)
         packet[0] = UInt8((type.rawValue >> 8) & 0xFF)
         packet[1] = UInt8(type.rawValue & 0xFF)
@@ -854,9 +918,17 @@ private final class MumbleChannelListClient {
         })
     }
 
-    private func receiveNextChunk() {
+    private func receiveNextChunk(generation: Int) {
+        guard let connection else {
+            return
+        }
+
         connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
             guard let self else {
+                return
+            }
+
+            guard generation == connectionGeneration else {
                 return
             }
 
@@ -866,16 +938,22 @@ private final class MumbleChannelListClient {
             }
 
             if let error {
-                finish(with: .failed("Connection to \(target.endpointDescription) failed: \(error.localizedDescription)", nil))
+                handleTransportInterruption(
+                    reason: "Connection to \(target.endpointDescription) failed: \(error.localizedDescription)",
+                    generation: generation
+                )
                 return
             }
 
             if isComplete {
-                finish(with: .disconnected("Disconnected from \(target.label)."))
+                handleTransportInterruption(
+                    reason: "Disconnected from \(target.label).",
+                    generation: generation
+                )
                 return
             }
 
-            receiveNextChunk()
+            receiveNextChunk(generation: generation)
         }
     }
 
@@ -915,6 +993,8 @@ private final class MumbleChannelListClient {
                 return
             }
 
+            reconnectAttempt = 0
+            hasSynchronized = true
             currentSessionID = serverSync.currentSessionID
             emit(.synchronized(welcomeText: serverSync.welcomeText, currentSessionID: serverSync.currentSessionID))
         case .channelState:
@@ -1074,9 +1154,77 @@ private final class MumbleChannelListClient {
         }
 
         hasFinished = true
+        pendingCertificateTrustChallenge = nil
         stopPingLoop()
+        stopReconnectLoop()
         emit(event)
-        connection.cancel()
+        teardownCurrentConnection()
+    }
+
+    private func handleTransportInterruption(reason: String, generation: Int) {
+        guard generation == connectionGeneration, !hasFinished else {
+            return
+        }
+
+        stopPingLoop()
+        pendingCertificateTrustChallenge = nil
+        teardownCurrentConnection()
+        scheduleReconnect(after: reason)
+    }
+
+    private func scheduleReconnect(after reason: String) {
+        guard !isUserInitiatedCancellation, !hasFinished else {
+            return
+        }
+
+        let nextAttempt = reconnectAttempt + 1
+        guard nextAttempt <= MumbleReconnectPolicy.maximumAttempts else {
+            finish(
+                with: .disconnected(
+                    "Lost connection to \(target.label) after \(MumbleReconnectPolicy.maximumAttempts) reconnect attempts. Last error: \(reason)"
+                )
+            )
+            return
+        }
+
+        reconnectAttempt = nextAttempt
+        let delay = MumbleReconnectPolicy.delay(forAttempt: nextAttempt)
+        users = [:]
+        currentSessionID = nil
+        emit(.usersUpdated([]))
+        emit(
+            .reconnecting(
+                reason: reason,
+                attempt: nextAttempt,
+                maximumAttempts: MumbleReconnectPolicy.maximumAttempts,
+                delay: delay
+            )
+        )
+
+        stopReconnectLoop()
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + .milliseconds(Int(delay * 1_000)))
+        timer.setEventHandler { [weak self] in
+            guard let self else {
+                return
+            }
+
+            self.reconnectTimer = nil
+            self.startConnectionAttempt()
+        }
+        timer.resume()
+        reconnectTimer = timer
+    }
+
+    private func stopReconnectLoop() {
+        reconnectTimer?.cancel()
+        reconnectTimer = nil
+    }
+
+    private func teardownCurrentConnection() {
+        connection?.stateUpdateHandler = nil
+        connection?.cancel()
+        connection = nil
     }
 
     private func emit(_ event: MumbleChannelListEvent) {
