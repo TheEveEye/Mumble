@@ -41,14 +41,10 @@ struct ConnectServerDialog: View {
             VStack(spacing: 0) {
                 HeaderRow()
 
-                List(selection: $selectedServerID) {
-                    if sections.isEmpty {
-                        ContentUnavailableView(
-                            "No Saved Servers",
-                            systemImage: "server.rack",
-                            description: Text("Use Add New to create your first server entry.")
-                        )
-                    } else {
+                if sections.isEmpty {
+                    EmptySavedServersView()
+                } else {
+                    List(selection: $selectedServerID) {
                         ForEach(sections) { section in
                             if section.title == "Servers" {
                                 ForEach(section.servers) { server in
@@ -65,8 +61,8 @@ struct ConnectServerDialog: View {
                             }
                         }
                     }
+                    .listStyle(.inset)
                 }
-                .listStyle(.inset)
             }
             .frame(maxHeight: .infinity)
 
@@ -186,6 +182,17 @@ private struct ServerRefreshTarget: Hashable {
     let id: UUID
     let host: String
     let port: Int
+}
+
+private struct EmptySavedServersView: View {
+    var body: some View {
+        ContentUnavailableView(
+            "No Saved Servers",
+            systemImage: "server.rack",
+            description: Text("Use Add New to create your first server entry.")
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
 }
 
 private struct HeaderRow: View {
