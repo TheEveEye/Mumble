@@ -11,11 +11,14 @@ struct ConnectServerDialog: View {
     @Environment(\.modelContext) private var modelContext
     @Query(animation: .default) private var servers: [SavedServer]
 
-    @State private var isPresentingServerEditor = false
-    @State private var editingServerID: UUID?
+    @State private var serverEditorContext: ServerEditorContext?
+
+    private var sortedServers: [SavedServer] {
+        SavedServerPresentation.sorted(servers)
+    }
 
     private var refreshTargets: [ServerRefreshTarget] {
-        SavedServerPresentation.sorted(servers).map {
+        sortedServers.map {
             ServerRefreshTarget(id: $0.id, host: $0.host, port: $0.port)
         }
     }
@@ -68,13 +71,15 @@ struct ConnectServerDialog: View {
 
             HStack {
                 Button("Add New") {
-                    editingServerID = nil
-                    isPresentingServerEditor = true
+                    serverEditorContext = .addNew
                 }
 
                 Button("Edit") {
-                    editingServerID = selectedServer?.id
-                    isPresentingServerEditor = selectedServer != nil
+                    guard let selectedServer else {
+                        return
+                    }
+
+                    serverEditorContext = .edit(selectedServer.id)
                 }
                 .disabled(selectedServer == nil)
 
@@ -97,16 +102,19 @@ struct ConnectServerDialog: View {
         }
         .padding(20)
         .frame(width: 540, height: 430)
-        .task(id: servers.count) {
+        .onAppear {
+            ensureValidSelection()
+        }
+        .onChange(of: sortedServers.map(\.id)) {
             ensureValidSelection()
         }
         .task(id: refreshTargets) {
             await refreshServerStatuses()
         }
-        .sheet(isPresented: $isPresentingServerEditor) {
+        .sheet(item: $serverEditorContext) { context in
             AddServerSheet(
                 logger: logger,
-                server: editingServerID.flatMap { serverID in
+                server: context.serverID.flatMap { serverID in
                     servers.first(where: { $0.id == serverID })
                 }
             ) { savedServer in
@@ -125,7 +133,7 @@ struct ConnectServerDialog: View {
             return
         }
 
-        selectedServerID = SavedServerPresentation.sorted(servers).first?.id
+        selectedServerID = sortedServers.first?.id
     }
 
     private func connect(_ server: SavedServer) {
@@ -182,6 +190,29 @@ private struct ServerRefreshTarget: Hashable {
     let id: UUID
     let host: String
     let port: Int
+}
+
+private enum ServerEditorContext: Identifiable {
+    case addNew
+    case edit(UUID)
+
+    var id: String {
+        switch self {
+        case .addNew:
+            return "addNew"
+        case let .edit(serverID):
+            return serverID.uuidString
+        }
+    }
+
+    var serverID: UUID? {
+        switch self {
+        case .addNew:
+            return nil
+        case let .edit(serverID):
+            return serverID
+        }
+    }
 }
 
 private struct EmptySavedServersView: View {
