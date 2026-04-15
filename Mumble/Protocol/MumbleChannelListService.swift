@@ -1,6 +1,7 @@
 import Foundation
 import Network
 import Security
+import CryptoKit
 
 struct MumbleConnectionTarget: Equatable, Sendable {
     let serverID: UUID
@@ -44,11 +45,38 @@ struct MumbleUser: Identifiable, Equatable, Hashable, Sendable {
 
 enum MumbleChannelListEvent: Sendable {
     case log(String)
+    case certificateTrustRequired(MumbleCertificateTrustChallenge)
     case synchronized(welcomeText: String?, currentSessionID: UInt32?)
     case channelsUpdated([MumbleChannel])
     case usersUpdated([MumbleUser])
     case failed(String, MumbleRejectType?)
     case disconnected(String?)
+}
+
+struct MumbleCertificateTrustChallenge: Identifiable, Equatable, Sendable {
+    let id: UUID
+    let serverID: UUID
+    let serverLabel: String
+    let host: String
+    let port: Int
+    let commonName: String
+    let subjectSummary: String
+    let fingerprintSHA256: String
+    let failureDescription: String
+
+    var endpointDescription: String {
+        port == 64738 ? host : "\(host):\(port)"
+    }
+
+    var formattedFingerprint: String {
+        stride(from: 0, to: fingerprintSHA256.count, by: 2)
+            .map { startIndex in
+                let start = fingerprintSHA256.index(fingerprintSHA256.startIndex, offsetBy: startIndex)
+                let end = fingerprintSHA256.index(start, offsetBy: min(2, fingerprintSHA256.distance(from: start, to: fingerprintSHA256.endIndex)), limitedBy: fingerprintSHA256.endIndex) ?? fingerprintSHA256.endIndex
+                return String(fingerprintSHA256[start..<end]).uppercased()
+            }
+            .joined(separator: ":")
+    }
 }
 
 enum MumbleRejectType: UInt64, Sendable {
@@ -66,13 +94,16 @@ enum MumbleRejectType: UInt64, Sendable {
 final class MumbleChannelListConnectionHandle {
     private let cancellation: () -> Void
     private let userMove: (UInt32, UInt32) -> Void
+    private let trustDecision: (UUID, Bool, Bool) -> Void
 
     init(
         cancellation: @escaping () -> Void,
-        userMove: @escaping (UInt32, UInt32) -> Void
+        userMove: @escaping (UInt32, UInt32) -> Void,
+        trustDecision: @escaping (UUID, Bool, Bool) -> Void
     ) {
         self.cancellation = cancellation
         self.userMove = userMove
+        self.trustDecision = trustDecision
     }
 
     func cancel() {
@@ -82,13 +113,19 @@ final class MumbleChannelListConnectionHandle {
     func joinChannel(sessionID: UInt32, channelID: UInt32) {
         userMove(sessionID, channelID)
     }
+
+    func resolveCertificateTrust(challengeID: UUID, accept: Bool, remember: Bool) {
+        trustDecision(challengeID, accept, remember)
+    }
 }
 
 struct MumbleChannelListService: Sendable {
     private let logger: AppLogger
+    private let trustedCertificateStore: TrustedCertificateStore
 
-    init(logger: AppLogger) {
+    init(logger: AppLogger, trustedCertificateStore: TrustedCertificateStore) {
         self.logger = logger
+        self.trustedCertificateStore = trustedCertificateStore
     }
 
     func connect(
@@ -98,6 +135,7 @@ struct MumbleChannelListService: Sendable {
         let client = MumbleChannelListClient(
             target: target,
             logger: logger,
+            trustedCertificateStore: trustedCertificateStore,
             onEvent: onEvent
         )
         client.start()
@@ -108,6 +146,13 @@ struct MumbleChannelListService: Sendable {
             },
             userMove: { sessionID, channelID in
                 client.moveUser(sessionID: sessionID, to: channelID)
+            },
+            trustDecision: { challengeID, accept, remember in
+                client.resolveCertificateTrust(
+                    challengeID: challengeID,
+                    accept: accept,
+                    remember: remember
+                )
             }
         )
     }
@@ -521,11 +566,23 @@ enum MumbleSessionMessageDecoder {
 }
 
 private final class MumbleChannelListClient {
+    private struct CertificateMetadata {
+        let commonName: String
+        let subjectSummary: String
+        let fingerprintSHA256: String
+    }
+
+    private struct PendingCertificateTrustChallenge {
+        let challenge: MumbleCertificateTrustChallenge
+        let completion: (Bool) -> Void
+    }
+
     private let target: MumbleConnectionTarget
     private let logger: AppLogger
+    private let trustedCertificateStore: TrustedCertificateStore
     private let onEvent: @Sendable (MumbleChannelListEvent) -> Void
-    private let connection: NWConnection
     private let queue: DispatchQueue
+    private var connection: NWConnection!
 
     private var receiveBuffer = Data()
     private var channels: [UInt32: MumbleChannel] = [:]
@@ -534,29 +591,25 @@ private final class MumbleChannelListClient {
     private var pingTimer: DispatchSourceTimer?
     private var isUserInitiatedCancellation = false
     private var hasFinished = false
+    private var pendingCertificateTrustChallenge: PendingCertificateTrustChallenge?
 
     init(
         target: MumbleConnectionTarget,
         logger: AppLogger,
+        trustedCertificateStore: TrustedCertificateStore,
         onEvent: @escaping @Sendable (MumbleChannelListEvent) -> Void
     ) {
         self.target = target
         self.logger = logger
+        self.trustedCertificateStore = trustedCertificateStore
         self.onEvent = onEvent
         queue = DispatchQueue(label: "dev.kiwiapps.Mumble.protocol.channel-list.\(UUID().uuidString)")
 
         let tlsOptions = NWProtocolTLS.Options()
         sec_protocol_options_set_verify_block(
             tlsOptions.securityProtocolOptions,
-            { _, trust, complete in
-                let secTrust = sec_trust_copy_ref(trust).takeRetainedValue()
-
-                if SecTrustEvaluateWithError(secTrust, nil) {
-                    complete(true)
-                    return
-                }
-
-                complete(true)
+            { [weak self] _, trust, complete in
+                self?.evaluateServerTrust(trust, completion: complete)
             },
             queue
         )
@@ -618,6 +671,47 @@ private final class MumbleChannelListClient {
         }
     }
 
+    func resolveCertificateTrust(challengeID: UUID, accept: Bool, remember: Bool) {
+        queue.async { [weak self] in
+            guard
+                let self,
+                let pendingChallenge = pendingCertificateTrustChallenge,
+                pendingChallenge.challenge.id == challengeID
+            else {
+                return
+            }
+
+            pendingCertificateTrustChallenge = nil
+
+            if accept {
+                if remember {
+                    let challenge = pendingChallenge.challenge
+                    let completion = pendingChallenge.completion
+                    Task {
+                        do {
+                            try await self.trustedCertificateStore.trustCertificate(
+                                host: challenge.host,
+                                port: challenge.port,
+                                fingerprintSHA256: challenge.fingerprintSHA256,
+                                commonName: challenge.commonName,
+                                subjectSummary: challenge.subjectSummary
+                            )
+                        } catch {
+                            self.logger.error("Failed to persist trusted certificate: \(error.localizedDescription)")
+                        }
+
+                        completion(true)
+                    }
+                } else {
+                    pendingChallenge.completion(true)
+                }
+            } else {
+                emit(.log("Certificate trust denied for \(target.endpointDescription)."))
+                pendingChallenge.completion(false)
+            }
+        }
+    }
+
     private func handleState(_ state: NWConnection.State) {
         switch state {
         case .ready:
@@ -642,6 +736,69 @@ private final class MumbleChannelListClient {
             }
         default:
             break
+        }
+    }
+
+    private func evaluateServerTrust(
+        _ trust: sec_trust_t,
+        completion: @escaping (Bool) -> Void
+    ) {
+        let secTrust = sec_trust_copy_ref(trust).takeRetainedValue()
+        SecTrustSetPolicies(secTrust, SecPolicyCreateSSL(true, target.host as CFString))
+
+        var trustError: CFError?
+        if SecTrustEvaluateWithError(secTrust, &trustError) {
+            completion(true)
+            return
+        }
+
+        guard let certificateMetadata = Self.certificateMetadata(from: secTrust) else {
+            completion(false)
+            return
+        }
+
+        Task { [weak self] in
+            guard let self else {
+                completion(false)
+                return
+            }
+
+            let failureDescription = (trustError as Error?)?.localizedDescription ?? "The certificate could not be verified by macOS."
+            let isAlreadyTrusted = (try? await trustedCertificateStore.isTrusted(
+                host: target.host,
+                port: target.port,
+                fingerprintSHA256: certificateMetadata.fingerprintSHA256
+            )) ?? false
+
+            queue.async { [weak self] in
+                guard let self else {
+                    completion(false)
+                    return
+                }
+
+                if isAlreadyTrusted {
+                    completion(true)
+                    return
+                }
+
+                let challenge = MumbleCertificateTrustChallenge(
+                    id: UUID(),
+                    serverID: target.serverID,
+                    serverLabel: target.label,
+                    host: target.host,
+                    port: target.port,
+                    commonName: certificateMetadata.commonName,
+                    subjectSummary: certificateMetadata.subjectSummary,
+                    fingerprintSHA256: certificateMetadata.fingerprintSHA256,
+                    failureDescription: failureDescription
+                )
+
+                pendingCertificateTrustChallenge = PendingCertificateTrustChallenge(
+                    challenge: challenge,
+                    completion: completion
+                )
+                emit(.certificateTrustRequired(challenge))
+            }
         }
     }
 
@@ -924,5 +1081,25 @@ private final class MumbleChannelListClient {
 
     private func emit(_ event: MumbleChannelListEvent) {
         onEvent(event)
+    }
+
+    private static func certificateMetadata(from trust: SecTrust) -> CertificateMetadata? {
+        guard let certificate = SecTrustCopyCertificateChain(trust) as? [SecCertificate], let certificate = certificate.first else {
+            return nil
+        }
+
+        let certificateData = SecCertificateCopyData(certificate) as Data
+        let fingerprintSHA256 = SHA256.hash(data: certificateData)
+            .map { String(format: "%02x", $0) }
+            .joined()
+
+        var commonNameReference: CFString?
+        SecCertificateCopyCommonName(certificate, &commonNameReference)
+
+        return CertificateMetadata(
+            commonName: commonNameReference as String? ?? "",
+            subjectSummary: SecCertificateCopySubjectSummary(certificate) as String? ?? "",
+            fingerprintSHA256: fingerprintSHA256
+        )
     }
 }

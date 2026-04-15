@@ -65,6 +65,33 @@ struct PersistenceModelTests {
     }
 
     @Test
+    func trustedCertificateStorePersistsAcceptedCertificates() async throws {
+        let controller = try PersistenceController.makeInMemory()
+        let store = TrustedCertificateStore(
+            container: controller.container,
+            logger: AppLogger(category: "tests.trusted-certificate-store")
+        )
+
+        #expect(try await store.isTrusted(host: "voice.example.com", port: 64738, fingerprintSHA256: "ab:cd") == false)
+
+        try await store.trustCertificate(
+            host: "voice.example.com",
+            port: 64738,
+            fingerprintSHA256: "ab:cd",
+            commonName: "Voice Example",
+            subjectSummary: "Voice Example"
+        )
+
+        #expect(try await store.isTrusted(host: "VOICE.EXAMPLE.COM", port: 64738, fingerprintSHA256: "AB CD"))
+
+        let context = ModelContext(controller.container)
+        let certificates = try context.fetch(FetchDescriptor<TrustedCertificate>())
+        #expect(certificates.count == 1)
+        #expect(certificates.first?.commonName == "Voice Example")
+        #expect(certificates.first?.lastValidatedAt != nil)
+    }
+
+    @Test
     func audioPreferencesClampPersistedValues() {
         let preferences = AudioPreferences(
             inputVolume: -2.0,

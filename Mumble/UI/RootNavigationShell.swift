@@ -23,6 +23,7 @@ struct RootNavigationShell: View {
     @State private var connectionAttemptID = UUID()
     @State private var connectionStatus = "Not connected"
     @State private var passwordPromptContext: ServerPasswordPromptContext?
+    @State private var certificateTrustPrompt: MumbleCertificateTrustChallenge?
 
     private var activeServer: SavedServer? {
         guard let connectedServerID else {
@@ -88,6 +89,15 @@ struct RootNavigationShell: View {
                 if let server = servers.first(where: { $0.id == context.serverID }) {
                     startConnection(to: server, password: password)
                 }
+            }
+        }
+        .sheet(item: $certificateTrustPrompt) { challenge in
+            ServerCertificateTrustPrompt(challenge: challenge) { accept, remember in
+                channelConnectionHandle?.resolveCertificateTrust(
+                    challengeID: challenge.id,
+                    accept: accept,
+                    remember: remember
+                )
             }
         }
         .frame(minWidth: 900, minHeight: 560)
@@ -234,6 +244,9 @@ struct RootNavigationShell: View {
         switch event {
         case .log(let message):
             appendLog(message)
+        case .certificateTrustRequired(let challenge):
+            appendLog("Certificate trust confirmation required for \(challenge.endpointDescription).")
+            certificateTrustPrompt = challenge
         case .synchronized(let welcomeText, let synchronizedSessionID):
             isLoadingChannels = false
             currentSessionID = synchronizedSessionID
@@ -257,6 +270,7 @@ struct RootNavigationShell: View {
 
             userSnapshot = users
         case .failed(let reason, let rejectType):
+            certificateTrustPrompt = nil
             appendLog("Connection failed: \(reason)")
             channelConnectionHandle = nil
             connectedServerID = nil
@@ -278,6 +292,7 @@ struct RootNavigationShell: View {
                 )
             }
         case .disconnected(let reason):
+            certificateTrustPrompt = nil
             if let reason, !reason.isEmpty {
                 appendLog(reason)
             }
