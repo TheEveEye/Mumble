@@ -60,6 +60,7 @@ struct RootNavigationShell: View {
         .task {
             do {
                 try dependencies.persistence.ensureRequiredData(in: modelContext)
+                try configureAudioPlaybackPreferences()
                 syncActiveServer()
             } catch {
                 dependencies.logger.error("Failed to bootstrap persistent data: \(error.localizedDescription)")
@@ -162,6 +163,7 @@ struct RootNavigationShell: View {
             currentSessionID = nil
             isLoadingChannels = false
             connectionStatus = "Not connected"
+            Task { await dependencies.audioPlayback.stop() }
             return
         }
 
@@ -372,6 +374,20 @@ struct RootNavigationShell: View {
             try dependencies.serverPasswordStore.removePassword(for: serverID)
         } catch {
             dependencies.logger.error("Failed to remove remembered password: \(error.localizedDescription)")
+        }
+    }
+
+    private func configureAudioPlaybackPreferences() throws {
+        let descriptor = FetchDescriptor<AudioPreferences>()
+        guard let audioPreferences = try modelContext.fetch(descriptor).first else {
+            return
+        }
+
+        Task {
+            await dependencies.audioPlayback.updatePreferences(
+                outputVolume: audioPreferences.outputVolume,
+                isOutputMuted: audioPreferences.isOutputMuted
+            )
         }
     }
 

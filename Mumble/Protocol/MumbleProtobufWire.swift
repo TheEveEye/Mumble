@@ -33,9 +33,17 @@ enum MumbleProtobufWire {
             return
         }
 
+        appendBytesField(fieldNumber, value: data, to: &payload)
+    }
+
+    static func appendBytesField(_ fieldNumber: UInt64, value: Data, to payload: inout Data) {
+        guard !value.isEmpty else {
+            return
+        }
+
         payload.append(encodeVarint((fieldNumber << 3) | 2))
-        payload.append(encodeVarint(UInt64(data.count)))
-        payload.append(data)
+        payload.append(encodeVarint(UInt64(value.count)))
+        payload.append(value)
     }
 
     static func decodeVarint<C: RandomAccessCollection>(

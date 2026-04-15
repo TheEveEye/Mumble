@@ -5,12 +5,14 @@ struct AppDependencies {
     let logger: AppLogger
     let serverPasswordStore: ServerPasswordStore
     let trustedCertificateStore: TrustedCertificateStore
+    let audioPlayback: MumbleAudioPlaybackController
     let serverStatus: MumbleServerStatusService
     let channelList: MumbleChannelListService
 
     static func live() -> AppDependencies {
         let logger = AppLogger(category: "app")
         let serverPasswordStore = ServerPasswordStore()
+        let audioPlayback = MumbleAudioPlaybackController(logger: AppLogger(category: "audio.playback"))
         let serverStatus = MumbleServerStatusService(logger: AppLogger(category: "protocol.server-status"))
 
         do {
@@ -21,13 +23,15 @@ struct AppDependencies {
             )
             let channelList = MumbleChannelListService(
                 logger: AppLogger(category: "protocol.channel-list"),
-                trustedCertificateStore: trustedCertificateStore
+                trustedCertificateStore: trustedCertificateStore,
+                audioPlayback: audioPlayback
             )
             return AppDependencies(
                 persistence: persistence,
                 logger: logger,
                 serverPasswordStore: serverPasswordStore,
                 trustedCertificateStore: trustedCertificateStore,
+                audioPlayback: audioPlayback,
                 serverStatus: serverStatus,
                 channelList: channelList
             )
@@ -42,7 +46,8 @@ struct AppDependencies {
                 )
                 let channelList = MumbleChannelListService(
                     logger: AppLogger(category: "protocol.channel-list"),
-                    trustedCertificateStore: trustedCertificateStore
+                    trustedCertificateStore: trustedCertificateStore,
+                    audioPlayback: audioPlayback
                 )
                 logger.error("Falling back to an in-memory store for this launch")
                 return AppDependencies(
@@ -50,6 +55,7 @@ struct AppDependencies {
                     logger: logger,
                     serverPasswordStore: serverPasswordStore,
                     trustedCertificateStore: trustedCertificateStore,
+                    audioPlayback: audioPlayback,
                     serverStatus: serverStatus,
                     channelList: channelList
                 )

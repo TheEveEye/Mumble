@@ -21,6 +21,11 @@ struct MumbleChannel: Identifiable, Equatable, Hashable, Sendable {
     var name: String
     var parentID: UInt32?
     var position: Int
+    var linkedChannelIDs: [UInt32]
+
+    var isLinked: Bool {
+        linkedChannelIDs.isEmpty == false
+    }
 }
 
 struct MumbleUser: Identifiable, Equatable, Hashable, Sendable {
@@ -123,10 +128,16 @@ final class MumbleChannelListConnectionHandle {
 struct MumbleChannelListService: Sendable {
     private let logger: AppLogger
     private let trustedCertificateStore: TrustedCertificateStore
+    private let audioPlayback: MumbleAudioPlaybackController
 
-    init(logger: AppLogger, trustedCertificateStore: TrustedCertificateStore) {
+    init(
+        logger: AppLogger,
+        trustedCertificateStore: TrustedCertificateStore,
+        audioPlayback: MumbleAudioPlaybackController
+    ) {
         self.logger = logger
         self.trustedCertificateStore = trustedCertificateStore
+        self.audioPlayback = audioPlayback
     }
 
     func connect(
@@ -137,6 +148,7 @@ struct MumbleChannelListService: Sendable {
             target: target,
             logger: logger,
             trustedCertificateStore: trustedCertificateStore,
+            audioPlayback: audioPlayback,
             onEvent: onEvent
         )
         client.start()
@@ -175,6 +187,9 @@ struct MumbleChannelStateMessage {
     let parentID: UInt32?
     let name: String?
     let position: Int?
+    let links: [UInt32]?
+    let linksAdded: [UInt32]
+    let linksRemoved: [UInt32]
 }
 
 struct MumbleUserStateMessage {
@@ -191,6 +206,12 @@ struct MumbleUserStateMessage {
 
 struct MumblePermissionDeniedMessage {
     let reason: String?
+}
+
+struct MumbleCryptSetupMessage {
+    let key: Data?
+    let clientNonce: Data?
+    let serverNonce: Data?
 }
 
 enum MumbleReconnectPolicy {
@@ -242,6 +263,12 @@ enum MumbleSessionPayloads {
         var payload = Data()
         MumbleProtobufWire.appendVarintField(1, value: UInt64(sessionID), to: &payload)
         MumbleProtobufWire.appendVarintField(5, value: UInt64(channelID), to: &payload)
+        return payload
+    }
+
+    static func cryptSetupPacket(clientNonce: Data) -> Data {
+        var payload = Data()
+        MumbleProtobufWire.appendBytesField(2, value: clientNonce, to: &payload)
         return payload
     }
 }
@@ -359,6 +386,10 @@ enum MumbleSessionMessageDecoder {
         var hasParent = false
         var name: String?
         var position: Int?
+        var links: [UInt32] = []
+        var sawLinks = false
+        var linksAdded: [UInt32] = []
+        var linksRemoved: [UInt32] = []
 
         while index < payload.endIndex {
             guard let key = MumbleProtobufWire.decodeVarint(from: payload, index: &index) else {
@@ -388,6 +419,31 @@ enum MumbleSessionMessageDecoder {
                 }
 
                 name = String(decoding: value, as: UTF8.self)
+            case (4, 0):
+                guard let value = MumbleProtobufWire.decodeVarint(from: payload, index: &index) else {
+                    return nil
+                }
+
+                sawLinks = true
+                if let linkID = UInt32(exactly: value) {
+                    links.append(linkID)
+                }
+            case (6, 0):
+                guard let value = MumbleProtobufWire.decodeVarint(from: payload, index: &index) else {
+                    return nil
+                }
+
+                if let linkID = UInt32(exactly: value) {
+                    linksAdded.append(linkID)
+                }
+            case (7, 0):
+                guard let value = MumbleProtobufWire.decodeVarint(from: payload, index: &index) else {
+                    return nil
+                }
+
+                if let linkID = UInt32(exactly: value) {
+                    linksRemoved.append(linkID)
+                }
             case (9, 0):
                 guard let value = MumbleProtobufWire.decodeVarint(from: payload, index: &index) else {
                     return nil
@@ -410,7 +466,10 @@ enum MumbleSessionMessageDecoder {
             hasParent: hasParent,
             parentID: parentID,
             name: name,
-            position: position
+            position: position,
+            links: sawLinks ? links : nil,
+            linksAdded: linksAdded,
+            linksRemoved: linksRemoved
         )
     }
 
@@ -573,6 +632,52 @@ enum MumbleSessionMessageDecoder {
 
         return MumblePermissionDeniedMessage(reason: reason)
     }
+
+    static func decodeCryptSetup(from data: Data) -> MumbleCryptSetupMessage? {
+        let payload = data[...]
+        var index = payload.startIndex
+
+        var key: Data?
+        var clientNonce: Data?
+        var serverNonce: Data?
+
+        while index < payload.endIndex {
+            guard let rawKey = MumbleProtobufWire.decodeVarint(from: payload, index: &index) else {
+                return nil
+            }
+
+            let fieldNumber = rawKey >> 3
+            let wireType = rawKey & 0x07
+
+            switch (fieldNumber, wireType) {
+            case (1, 2):
+                guard let value = MumbleProtobufWire.decodeLengthDelimited(from: payload, index: &index) else {
+                    return nil
+                }
+                key = Data(value)
+            case (2, 2):
+                guard let value = MumbleProtobufWire.decodeLengthDelimited(from: payload, index: &index) else {
+                    return nil
+                }
+                clientNonce = Data(value)
+            case (3, 2):
+                guard let value = MumbleProtobufWire.decodeLengthDelimited(from: payload, index: &index) else {
+                    return nil
+                }
+                serverNonce = Data(value)
+            default:
+                guard MumbleProtobufWire.skipField(wireType: wireType, payload: payload, index: &index) else {
+                    return nil
+                }
+            }
+        }
+
+        return MumbleCryptSetupMessage(
+            key: key,
+            clientNonce: clientNonce,
+            serverNonce: serverNonce
+        )
+    }
 }
 
 private final class MumbleChannelListClient {
@@ -590,9 +695,11 @@ private final class MumbleChannelListClient {
     private let target: MumbleConnectionTarget
     private let logger: AppLogger
     private let trustedCertificateStore: TrustedCertificateStore
+    private let audioPlayback: MumbleAudioPlaybackController
     private let onEvent: @Sendable (MumbleChannelListEvent) -> Void
     private let queue: DispatchQueue
     private var connection: NWConnection?
+    private var udpConnection: NWConnection?
     private var connectionGeneration = 0
 
     private var receiveBuffer = Data()
@@ -600,6 +707,7 @@ private final class MumbleChannelListClient {
     private var users: [UInt32: MumbleUser] = [:]
     private var currentSessionID: UInt32?
     private var pingTimer: DispatchSourceTimer?
+    private var udpPingTimer: DispatchSourceTimer?
     private var reconnectTimer: DispatchSourceTimer?
     private var isUserInitiatedCancellation = false
     private var hasFinished = false
@@ -607,16 +715,23 @@ private final class MumbleChannelListClient {
     private var hasSynchronized = false
     private var pendingCertificateTrustChallenge: PendingCertificateTrustChallenge?
     private var temporarilyTrustedCertificateFingerprintSHA256: String?
+    private var cryptState = MumbleCryptState()
+    private var receivedUDPDatagramCount = 0
+    private var decryptedUDPDatagramCount = 0
+    private var receivedVoicePacketCount = 0
+    private var undecodedVoiceTransportCount = 0
 
     init(
         target: MumbleConnectionTarget,
         logger: AppLogger,
         trustedCertificateStore: TrustedCertificateStore,
+        audioPlayback: MumbleAudioPlaybackController,
         onEvent: @escaping @Sendable (MumbleChannelListEvent) -> Void
     ) {
         self.target = target
         self.logger = logger
         self.trustedCertificateStore = trustedCertificateStore
+        self.audioPlayback = audioPlayback
         self.onEvent = onEvent
         queue = DispatchQueue(label: "dev.kiwiapps.Mumble.protocol.channel-list.\(UUID().uuidString)")
     }
@@ -640,8 +755,10 @@ private final class MumbleChannelListClient {
             hasFinished = true
             pendingCertificateTrustChallenge = nil
             stopPingLoop()
+            stopUDPPingLoop()
             stopReconnectLoop()
             teardownCurrentConnection()
+            Task { await self.audioPlayback.stop() }
         }
     }
 
@@ -716,12 +833,19 @@ private final class MumbleChannelListClient {
 
         stopReconnectLoop()
         stopPingLoop()
+        stopUDPPingLoop()
         pendingCertificateTrustChallenge = nil
         receiveBuffer.removeAll(keepingCapacity: true)
         channels = [:]
         users = [:]
         currentSessionID = nil
         hasSynchronized = false
+        cryptState = MumbleCryptState()
+        receivedUDPDatagramCount = 0
+        decryptedUDPDatagramCount = 0
+        receivedVoicePacketCount = 0
+        undecodedVoiceTransportCount = 0
+        Task { await self.audioPlayback.stop() }
 
         let connection = makeConnection()
         self.connection = connection
@@ -777,6 +901,7 @@ private final class MumbleChannelListClient {
             )
         case .cancelled:
             stopPingLoop()
+            stopUDPPingLoop()
 
             guard generation == connectionGeneration, !hasFinished else {
                 return
@@ -895,6 +1020,42 @@ private final class MumbleChannelListClient {
         sendMessage(type: .ping, payload: MumbleSessionPayloads.pingPacket(timestamp: timestamp))
     }
 
+    private func startUDPPingLoop() {
+        guard cryptState.isValid else {
+            return
+        }
+
+        stopUDPPingLoop()
+        sendUDPPing()
+
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + .seconds(5), repeating: .seconds(5))
+        timer.setEventHandler { [weak self] in
+            self?.sendUDPPing()
+        }
+        timer.resume()
+        udpPingTimer = timer
+    }
+
+    private func stopUDPPingLoop() {
+        udpPingTimer?.cancel()
+        udpPingTimer = nil
+    }
+
+    private func sendUDPPing() {
+        guard
+            let encryptedPacket = cryptState.encrypt(
+                MumbleProtobufPingPacket.makeExtendedPingRequest(
+                    timestamp: UInt64(Date().timeIntervalSince1970 * 1_000)
+                )
+            )
+        else {
+            return
+        }
+
+        sendUDPMessage(encryptedPacket)
+    }
+
     private func sendMessage(type: MumbleTCPMessageType, payload: Data) {
         guard let connection else {
             return
@@ -916,6 +1077,130 @@ private final class MumbleChannelListClient {
                 logger.error("Failed to send TCP message to \(target.endpointDescription): \(error.localizedDescription)")
             }
         })
+    }
+
+    private func ensureUDPTransport() {
+        guard udpConnection == nil else {
+            return
+        }
+
+        let parameters = NWParameters.udp
+        parameters.allowLocalEndpointReuse = true
+
+        let udpConnection = NWConnection(
+            host: NWEndpoint.Host(target.host),
+            port: NWEndpoint.Port(rawValue: UInt16(target.port)) ?? 64738,
+            using: parameters
+        )
+        self.udpConnection = udpConnection
+
+        udpConnection.stateUpdateHandler = { [weak self] state in
+            self?.handleUDPState(state)
+        }
+        udpConnection.start(queue: queue)
+        receiveUDPMessage()
+    }
+
+    private func handleUDPState(_ state: NWConnection.State) {
+        switch state {
+        case .ready:
+            logger.info("UDP transport ready for \(target.endpointDescription)")
+            startUDPPingLoop()
+        case .failed(let error):
+            logger.error("UDP transport failed for \(target.endpointDescription): \(error.localizedDescription)")
+            stopUDPPingLoop()
+        case .cancelled:
+            stopUDPPingLoop()
+        default:
+            break
+        }
+    }
+
+    private func sendUDPMessage(_ packet: Data) {
+        ensureUDPTransport()
+        udpConnection?.send(content: packet, completion: .contentProcessed { [logger, target] error in
+            if let error {
+                logger.error("Failed to send UDP packet to \(target.endpointDescription): \(error.localizedDescription)")
+            }
+        })
+    }
+
+    private func receiveUDPMessage() {
+        udpConnection?.receiveMessage { [weak self] data, _, _, error in
+            guard let self else {
+                return
+            }
+
+            if let data, !data.isEmpty {
+                handleUDPDatagram(data)
+            }
+
+            if let error {
+                logger.error("UDP receive failed for \(target.endpointDescription): \(error.localizedDescription)")
+                return
+            }
+
+            guard udpConnection != nil else {
+                return
+            }
+
+            receiveUDPMessage()
+        }
+    }
+
+    private func handleUDPDatagram(_ encryptedPacket: Data) {
+        receivedUDPDatagramCount += 1
+        if shouldLogVoiceTransportEvent(number: receivedUDPDatagramCount) {
+            logger.info(
+                "Received UDP datagram #\(receivedUDPDatagramCount) from \(target.endpointDescription), " +
+                "bytes=\(encryptedPacket.count), leadingByte=0x\(String(format: "%02X", encryptedPacket.first ?? 0))"
+            )
+        }
+
+        guard let decryptedPayload = cryptState.decrypt(encryptedPacket) else {
+            logger.error(
+                "Failed to decrypt UDP datagram #\(receivedUDPDatagramCount) from \(target.endpointDescription). " +
+                "good=\(cryptState.goodPackets) late=\(cryptState.latePackets) lost=\(cryptState.lostPackets)"
+            )
+            return
+        }
+
+        decryptedUDPDatagramCount += 1
+        if shouldLogVoiceTransportEvent(number: decryptedUDPDatagramCount) {
+            logger.info(
+                "Decrypted UDP payload #\(decryptedUDPDatagramCount) from \(target.endpointDescription), " +
+                "bytes=\(decryptedPayload.count), header=0x\(String(format: "%02X", decryptedPayload.first ?? 0))"
+            )
+        }
+
+        handleVoiceTransportPacket(decryptedPayload, source: "UDP")
+    }
+
+    private func handleVoiceTransportPacket(_ payload: Data, source: String) {
+        guard let packet = MumbleUDPVoicePacketDecoder.decode(payload) else {
+            undecodedVoiceTransportCount += 1
+            logger.error(
+                "Unable to decode \(source) voice transport packet #\(undecodedVoiceTransportCount) from \(target.endpointDescription). " +
+                "bytes=\(payload.count), header=0x\(String(format: "%02X", payload.first ?? 0))"
+            )
+            return
+        }
+
+        switch packet {
+        case .ping:
+            if shouldLogVoiceTransportEvent(number: decryptedUDPDatagramCount) {
+                logger.debug("Received \(source) voice transport ping from \(target.endpointDescription).")
+            }
+        case .audio(let voicePacket):
+            receivedVoicePacketCount += 1
+            if shouldLogVoiceTransportEvent(number: receivedVoicePacketCount) {
+                logger.info(
+                    "Decoded \(source) audio packet #\(receivedVoicePacketCount) from session \(voicePacket.senderSession), " +
+                    "frame=\(voicePacket.frameNumber), payloadBytes=\(voicePacket.payload.count)"
+                )
+            }
+            Task { await self.audioPlayback.handleVoicePacket(voicePacket) }
+        }
     }
 
     private func receiveNextChunk(generation: Int) {
@@ -988,6 +1273,12 @@ private final class MumbleChannelListClient {
             let rejectMessage = MumbleSessionMessageDecoder.decodeReject(from: payload)
             let reason = rejectMessage?.reason ?? "Server rejected the connection."
             finish(with: .failed(reason, rejectMessage?.type))
+        case .cryptSetup:
+            guard let cryptSetup = MumbleSessionMessageDecoder.decodeCryptSetup(from: payload) else {
+                return
+            }
+
+            handleCryptSetup(cryptSetup)
         case .serverSync:
             guard let serverSync = MumbleSessionMessageDecoder.decodeServerSync(from: payload) else {
                 return
@@ -996,7 +1287,10 @@ private final class MumbleChannelListClient {
             reconnectAttempt = 0
             hasSynchronized = true
             currentSessionID = serverSync.currentSessionID
+            updateAudioSessionState()
             emit(.synchronized(welcomeText: serverSync.welcomeText, currentSessionID: serverSync.currentSessionID))
+        case .udpTunnel:
+            handleVoiceTransportPacket(payload, source: "TCP tunnel")
         case .channelState:
             guard let channelState = MumbleSessionMessageDecoder.decodeChannelState(from: payload) else {
                 return
@@ -1026,9 +1320,43 @@ private final class MumbleChannelListClient {
 
             users.removeValue(forKey: sessionID)
             emitUserSnapshot()
+            updateAudioSessionState()
         default:
             break
         }
+    }
+
+    private func handleCryptSetup(_ message: MumbleCryptSetupMessage) {
+        if let key = message.key, let clientNonce = message.clientNonce, let serverNonce = message.serverNonce {
+            guard cryptState.setKey(key: key, clientNonce: clientNonce, serverNonce: serverNonce) else {
+                emit(.log("Received invalid UDP crypt setup from \(target.endpointDescription)."))
+                return
+            }
+
+            ensureUDPTransport()
+            startUDPPingLoop()
+            return
+        }
+
+        if let serverNonce = message.serverNonce {
+            guard cryptState.setDecryptIV(serverNonce) else {
+                emit(.log("Received invalid UDP server nonce from \(target.endpointDescription)."))
+                return
+            }
+
+            ensureUDPTransport()
+            startUDPPingLoop()
+            return
+        }
+
+        guard cryptState.isValid else {
+            return
+        }
+
+        sendMessage(
+            type: .cryptSetup,
+            payload: MumbleSessionPayloads.cryptSetupPacket(clientNonce: cryptState.currentEncryptIV())
+        )
     }
 
     private func applyChannelState(_ message: MumbleChannelStateMessage) {
@@ -1036,7 +1364,8 @@ private final class MumbleChannelListClient {
             id: message.channelID,
             name: "Channel \(message.channelID)",
             parentID: nil,
-            position: 0
+            position: 0,
+            linkedChannelIDs: []
         )
 
         if message.hasParent {
@@ -1050,6 +1379,23 @@ private final class MumbleChannelListClient {
         if let position = message.position {
             channel.position = position
         }
+
+        var linkedChannelIDs = Set(channel.linkedChannelIDs)
+
+        if let links = message.links {
+            linkedChannelIDs = Set(links)
+        }
+
+        if message.linksAdded.isEmpty == false {
+            linkedChannelIDs.formUnion(message.linksAdded)
+        }
+
+        if message.linksRemoved.isEmpty == false {
+            linkedChannelIDs.subtract(message.linksRemoved)
+        }
+
+        linkedChannelIDs.remove(message.channelID)
+        channel.linkedChannelIDs = linkedChannelIDs.sorted()
 
         channels[message.channelID] = channel
         emitChannelSnapshot()
@@ -1102,6 +1448,7 @@ private final class MumbleChannelListClient {
 
         users[message.sessionID] = user
         emitUserSnapshot()
+        updateAudioSessionState()
     }
 
     private func removeChannelTree(withID channelID: UInt32) {
@@ -1148,6 +1495,27 @@ private final class MumbleChannelListClient {
         emit(.usersUpdated(snapshot))
     }
 
+    private func updateAudioSessionState() {
+        let snapshot = users.values.sorted {
+            let comparison = $0.name.localizedStandardCompare($1.name)
+
+            if comparison == .orderedSame {
+                return $0.id < $1.id
+            }
+
+            return comparison == .orderedAscending
+        }
+
+        let currentSessionID = currentSessionID
+        Task {
+            await self.audioPlayback.updateSession(users: snapshot, currentSessionID: currentSessionID)
+        }
+    }
+
+    private func shouldLogVoiceTransportEvent(number: Int) -> Bool {
+        number <= 5 || number % 50 == 0
+    }
+
     private func finish(with event: MumbleChannelListEvent) {
         guard !hasFinished else {
             return
@@ -1156,9 +1524,11 @@ private final class MumbleChannelListClient {
         hasFinished = true
         pendingCertificateTrustChallenge = nil
         stopPingLoop()
+        stopUDPPingLoop()
         stopReconnectLoop()
         emit(event)
         teardownCurrentConnection()
+        Task { await self.audioPlayback.stop() }
     }
 
     private func handleTransportInterruption(reason: String, generation: Int) {
@@ -1167,6 +1537,7 @@ private final class MumbleChannelListClient {
         }
 
         stopPingLoop()
+        stopUDPPingLoop()
         pendingCertificateTrustChallenge = nil
         teardownCurrentConnection()
         scheduleReconnect(after: reason)
@@ -1225,6 +1596,9 @@ private final class MumbleChannelListClient {
         connection?.stateUpdateHandler = nil
         connection?.cancel()
         connection = nil
+        udpConnection?.stateUpdateHandler = nil
+        udpConnection?.cancel()
+        udpConnection = nil
     }
 
     private func emit(_ event: MumbleChannelListEvent) {

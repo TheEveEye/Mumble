@@ -22,6 +22,7 @@ struct ChannelWorkspaceView: View {
                 ChannelTreeView(
                     nodes: MumbleChannelTreeNode.makeTree(from: channels, users: users),
                     channelsByID: Dictionary(uniqueKeysWithValues: channels.map { ($0.id, $0) }),
+                    linkedChannelIDsForCurrentSession: linkedChannelIDsForCurrentSession,
                     currentSessionID: currentSessionID,
                     currentSessionChannelID: currentSessionChannelID,
                     onJoinChannel: onJoinChannel,
@@ -30,6 +31,19 @@ struct ChannelWorkspaceView: View {
             }
         }
         .background(Color(nsColor: .textBackgroundColor))
+    }
+
+    private var linkedChannelIDsForCurrentSession: Set<UInt32> {
+        guard let currentSessionChannelID else {
+            return []
+        }
+
+        let channelsByID = Dictionary(uniqueKeysWithValues: channels.map { ($0.id, $0) })
+        guard let currentChannel = channelsByID[currentSessionChannelID] else {
+            return []
+        }
+
+        return Set(currentChannel.linkedChannelIDs).subtracting([currentSessionChannelID])
     }
 }
 
@@ -97,6 +111,7 @@ private enum DraggedMumbleUserPayload {
 private struct ChannelTreeView: View {
     let nodes: [MumbleChannelTreeNode]
     let channelsByID: [UInt32: MumbleChannel]
+    let linkedChannelIDsForCurrentSession: Set<UInt32>
     let currentSessionID: UInt32?
     let currentSessionChannelID: UInt32?
     let onJoinChannel: (MumbleChannel) -> Void
@@ -117,6 +132,7 @@ private struct ChannelTreeView: View {
                         node: node,
                         depth: 0,
                         channelsByID: channelsByID,
+                        linkedChannelIDsForCurrentSession: linkedChannelIDsForCurrentSession,
                         currentSessionID: currentSessionID,
                         currentSessionChannelID: currentSessionChannelID,
                         expansionOverrides: $expansionOverrides,
@@ -156,6 +172,7 @@ private struct ChannelTreeBranch: View {
     let node: MumbleChannelTreeNode
     let depth: Int
     let channelsByID: [UInt32: MumbleChannel]
+    let linkedChannelIDsForCurrentSession: Set<UInt32>
     let currentSessionID: UInt32?
     let currentSessionChannelID: UInt32?
     @Binding var expansionOverrides: [UInt32: Bool]
@@ -170,6 +187,7 @@ private struct ChannelTreeBranch: View {
                 node: node,
                 depth: depth,
                 channelsByID: channelsByID,
+                linkedChannelIDsForCurrentSession: linkedChannelIDsForCurrentSession,
                 isExpanded: nil,
                 onToggleExpansion: nil,
                 currentSessionChannelID: currentSessionChannelID,
@@ -187,6 +205,7 @@ private struct ChannelTreeBranch: View {
                         node: node,
                         depth: depth,
                         channelsByID: channelsByID,
+                        linkedChannelIDsForCurrentSession: linkedChannelIDsForCurrentSession,
                         isExpanded: children.isEmpty ? nil : isExpanded,
                         onToggleExpansion: children.isEmpty ? nil : {
                             expansionOverrides[channelID] = !isExpanded
@@ -203,6 +222,7 @@ private struct ChannelTreeBranch: View {
                                 node: child,
                                 depth: depth + 1,
                                 channelsByID: channelsByID,
+                                linkedChannelIDsForCurrentSession: linkedChannelIDsForCurrentSession,
                                 currentSessionID: currentSessionID,
                                 currentSessionChannelID: currentSessionChannelID,
                                 expansionOverrides: $expansionOverrides,
@@ -224,6 +244,7 @@ private struct ChannelTreeRow: View {
     let node: MumbleChannelTreeNode
     let depth: Int
     let channelsByID: [UInt32: MumbleChannel]
+    let linkedChannelIDsForCurrentSession: Set<UInt32>
     let isExpanded: Bool?
     let onToggleExpansion: (() -> Void)?
     let currentSessionChannelID: UInt32?
@@ -245,9 +266,18 @@ private struct ChannelTreeRow: View {
             case .channel:
                 disclosureIndicator
 
-                Text(node.title)
-                    .font(.body)
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(node.title)
+                        .font(.body)
+                        .lineLimit(1)
+
+                    if let channel = node.channel, linkedChannelIDsForCurrentSession.contains(channel.id) {
+                        Image(systemName: "link")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(Color(red: 0.43, green: 0.78, blue: 1.0))
+                            .help(channelLinkHelpText(for: channel))
+                    }
+                }
             case .user:
                 indentationSpacer
 
@@ -332,6 +362,15 @@ private struct ChannelTreeRow: View {
         }
 
         return .specificSession(currentSessionID)
+    }
+
+    private func channelLinkHelpText(for channel: MumbleChannel) -> String {
+        let linkedCount = channel.linkedChannelIDs.count
+        if linkedCount == 1 {
+            return "Linked to 1 channel"
+        }
+
+        return "Linked to \(linkedCount) channels"
     }
 }
 
