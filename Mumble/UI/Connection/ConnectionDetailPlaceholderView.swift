@@ -5,7 +5,10 @@ struct ConnectionDetailPlaceholderView: View {
     let channels: [MumbleChannel]
     let users: [MumbleUser]
     let currentSessionID: UInt32?
+    let currentSessionChannelID: UInt32?
     let isLoadingChannels: Bool
+    let onJoinChannel: (MumbleChannel) -> Void
+    let onMoveUser: (UInt32, MumbleChannel) -> Void
 
     var body: some View {
         Group {
@@ -22,7 +25,10 @@ struct ConnectionDetailPlaceholderView: View {
                         channels: channels,
                         users: users,
                         currentSessionID: currentSessionID,
-                        isLoadingChannels: isLoadingChannels
+                        currentSessionChannelID: currentSessionChannelID,
+                        isLoadingChannels: isLoadingChannels,
+                        onJoinChannel: onJoinChannel,
+                        onMoveUser: onMoveUser
                     )
                 }
             }

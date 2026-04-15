@@ -56,6 +56,16 @@ struct MumbleChannelListServiceTests {
     }
 
     @Test
+    func joinChannelPacketEncodesSessionAndDestinationChannel() {
+        let payload = MumbleSessionPayloads.joinChannelPacket(sessionID: 42, channelID: 7)
+
+        let decoded = MumbleSessionMessageDecoder.decodeUserState(from: payload)
+
+        #expect(decoded?.sessionID == 42)
+        #expect(decoded?.channelID == 7)
+    }
+
+    @Test
     func channelTreeBuilderCreatesHierarchyWithUsers() {
         let channels = [
             MumbleChannel(id: 0, name: "Root", parentID: nil, position: 0),

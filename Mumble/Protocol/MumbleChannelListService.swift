@@ -15,7 +15,7 @@ struct MumbleConnectionTarget: Equatable, Sendable {
     }
 }
 
-struct MumbleChannel: Identifiable, Equatable, Sendable {
+struct MumbleChannel: Identifiable, Equatable, Hashable, Sendable {
     let id: UInt32
     var name: String
     var parentID: UInt32?
@@ -65,13 +65,22 @@ enum MumbleRejectType: UInt64, Sendable {
 
 final class MumbleChannelListConnectionHandle {
     private let cancellation: () -> Void
+    private let userMove: (UInt32, UInt32) -> Void
 
-    init(cancellation: @escaping () -> Void) {
+    init(
+        cancellation: @escaping () -> Void,
+        userMove: @escaping (UInt32, UInt32) -> Void
+    ) {
         self.cancellation = cancellation
+        self.userMove = userMove
     }
 
     func cancel() {
         cancellation()
+    }
+
+    func joinChannel(sessionID: UInt32, channelID: UInt32) {
+        userMove(sessionID, channelID)
     }
 }
 
@@ -93,9 +102,14 @@ struct MumbleChannelListService: Sendable {
         )
         client.start()
 
-        return MumbleChannelListConnectionHandle {
-            client.cancel(isUserInitiated: true)
-        }
+        return MumbleChannelListConnectionHandle(
+            cancellation: {
+                client.cancel(isUserInitiated: true)
+            },
+            userMove: { sessionID, channelID in
+                client.moveUser(sessionID: sessionID, to: channelID)
+            }
+        )
     }
 }
 
@@ -129,7 +143,11 @@ struct MumbleUserStateMessage {
     let isSelfDeafened: Bool?
 }
 
-private enum MumbleSessionPayloads {
+struct MumblePermissionDeniedMessage {
+    let reason: String?
+}
+
+enum MumbleSessionPayloads {
     private static let currentMajor: UInt64 = UInt64(MumbleProtocolVersion.currentMajor)
     private static let currentMinor: UInt64 = UInt64(MumbleProtocolVersion.currentMinor)
     private static let currentPatch: UInt64 = 0
@@ -162,6 +180,13 @@ private enum MumbleSessionPayloads {
     static func pingPacket(timestamp: UInt64) -> Data {
         var payload = Data()
         MumbleProtobufWire.appendVarintField(1, value: timestamp, to: &payload)
+        return payload
+    }
+
+    static func joinChannelPacket(sessionID: UInt32, channelID: UInt32) -> Data {
+        var payload = Data()
+        MumbleProtobufWire.appendVarintField(1, value: UInt64(sessionID), to: &payload)
+        MumbleProtobufWire.appendVarintField(5, value: UInt64(channelID), to: &payload)
         return payload
     }
 }
@@ -463,6 +488,36 @@ enum MumbleSessionMessageDecoder {
             isSelfDeafened: isSelfDeafened
         )
     }
+
+    static func decodePermissionDenied(from data: Data) -> MumblePermissionDeniedMessage? {
+        let payload = data[...]
+        var index = payload.startIndex
+        var reason: String?
+
+        while index < payload.endIndex {
+            guard let key = MumbleProtobufWire.decodeVarint(from: payload, index: &index) else {
+                return nil
+            }
+
+            let fieldNumber = key >> 3
+            let wireType = key & 0x07
+
+            switch (fieldNumber, wireType) {
+            case (4, 2):
+                guard let value = MumbleProtobufWire.decodeLengthDelimited(from: payload, index: &index) else {
+                    return nil
+                }
+
+                reason = String(decoding: value, as: UTF8.self)
+            default:
+                guard MumbleProtobufWire.skipField(wireType: wireType, payload: payload, index: &index) else {
+                    return nil
+                }
+            }
+        }
+
+        return MumblePermissionDeniedMessage(reason: reason)
+    }
 }
 
 private final class MumbleChannelListClient {
@@ -475,6 +530,7 @@ private final class MumbleChannelListClient {
     private var receiveBuffer = Data()
     private var channels: [UInt32: MumbleChannel] = [:]
     private var users: [UInt32: MumbleUser] = [:]
+    private var currentSessionID: UInt32?
     private var pingTimer: DispatchSourceTimer?
     private var isUserInitiatedCancellation = false
     private var hasFinished = false
@@ -538,6 +594,27 @@ private final class MumbleChannelListClient {
 
             stopPingLoop()
             connection.cancel()
+        }
+    }
+
+    func moveUser(sessionID: UInt32, to channelID: UInt32) {
+        queue.async { [weak self] in
+            guard let self else {
+                return
+            }
+
+            guard currentSessionID != nil else {
+                logger.error("Ignoring move request before synchronization for \(target.endpointDescription)")
+                return
+            }
+
+            sendMessage(
+                type: .userState,
+                payload: MumbleSessionPayloads.joinChannelPacket(
+                    sessionID: sessionID,
+                    channelID: channelID
+                )
+            )
         }
     }
 
@@ -681,6 +758,7 @@ private final class MumbleChannelListClient {
                 return
             }
 
+            currentSessionID = serverSync.currentSessionID
             emit(.synchronized(welcomeText: serverSync.welcomeText, currentSessionID: serverSync.currentSessionID))
         case .channelState:
             guard let channelState = MumbleSessionMessageDecoder.decodeChannelState(from: payload) else {
@@ -695,6 +773,9 @@ private final class MumbleChannelListClient {
 
             removeChannelTree(withID: channelID)
             emitChannelSnapshot()
+        case .permissionDenied:
+            let permissionDenied = MumbleSessionMessageDecoder.decodePermissionDenied(from: payload)
+            emit(.log(permissionDenied?.reason ?? "Permission denied."))
         case .userState:
             guard let userState = MumbleSessionMessageDecoder.decodeUserState(from: payload) else {
                 return

@@ -32,6 +32,14 @@ struct RootNavigationShell: View {
         return servers.first(where: { $0.id == connectedServerID })
     }
 
+    private var currentSessionUser: MumbleUser? {
+        guard let currentSessionID else {
+            return nil
+        }
+
+        return userSnapshot.first(where: { $0.id == currentSessionID })
+    }
+
     var body: some View {
         HSplitView {
             ConsolePane(entries: logEntries, statusText: connectionStatus)
@@ -42,7 +50,10 @@ struct RootNavigationShell: View {
                 channels: channelSnapshot,
                 users: userSnapshot,
                 currentSessionID: currentSessionID,
-                isLoadingChannels: isLoadingChannels
+                currentSessionChannelID: currentSessionUser?.channelID,
+                isLoadingChannels: isLoadingChannels,
+                onJoinChannel: joinChannel,
+                onMoveUser: moveUser(sessionID:to:)
             )
         }
         .task {
@@ -279,6 +290,24 @@ struct RootNavigationShell: View {
             isLoadingChannels = false
             connectionStatus = "Not connected"
         }
+    }
+
+    private func joinChannel(_ channel: MumbleChannel) {
+        guard let currentSessionID else {
+            return
+        }
+
+        moveUser(sessionID: currentSessionID, to: channel)
+    }
+
+    private func moveUser(sessionID: UInt32, to channel: MumbleChannel) {
+        if let existingUser = userSnapshot.first(where: { $0.id == sessionID }), existingUser.channelID == channel.id {
+            return
+        }
+
+        let action = sessionID == currentSessionID ? "Joining channel" : "Moving user to"
+        appendLog("\(action) \(channel.name).")
+        channelConnectionHandle?.joinChannel(sessionID: sessionID, channelID: channel.id)
     }
 
     private func resolvedPassword(for server: SavedServer, override: String?) -> String? {
