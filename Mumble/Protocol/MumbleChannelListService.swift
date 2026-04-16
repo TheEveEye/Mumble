@@ -243,6 +243,13 @@ struct MumblePermissionDeniedMessage {
     let reason: String?
 }
 
+struct MumbleUserRemoveMessage {
+    let sessionID: UInt32
+    let actorSessionID: UInt32?
+    let reason: String?
+    let isBan: Bool
+}
+
 struct MumbleCryptSetupMessage {
     let key: Data?
     let clientNonce: Data?
@@ -508,9 +515,13 @@ enum MumbleSessionMessageDecoder {
         )
     }
 
-    static func decodeUserRemove(from data: Data) -> UInt32? {
+    static func decodeUserRemove(from data: Data) -> MumbleUserRemoveMessage? {
         let payload = data[...]
         var index = payload.startIndex
+        var sessionID: UInt32?
+        var actorSessionID: UInt32?
+        var reason: String?
+        var isBan = false
 
         while index < payload.endIndex {
             guard let key = MumbleProtobufWire.decodeVarint(from: payload, index: &index) else {
@@ -526,7 +537,25 @@ enum MumbleSessionMessageDecoder {
                     return nil
                 }
 
-                return UInt32(exactly: value)
+                sessionID = UInt32(exactly: value)
+            case (2, 0):
+                guard let value = MumbleProtobufWire.decodeVarint(from: payload, index: &index) else {
+                    return nil
+                }
+
+                actorSessionID = UInt32(exactly: value)
+            case (3, 2):
+                guard let value = MumbleProtobufWire.decodeLengthDelimited(from: payload, index: &index) else {
+                    return nil
+                }
+
+                reason = String(data: Data(value), encoding: .utf8)
+            case (4, 0):
+                guard let value = MumbleProtobufWire.decodeVarint(from: payload, index: &index) else {
+                    return nil
+                }
+
+                isBan = value != 0
             default:
                 guard MumbleProtobufWire.skipField(wireType: wireType, payload: payload, index: &index) else {
                     return nil
@@ -534,7 +563,16 @@ enum MumbleSessionMessageDecoder {
             }
         }
 
-        return nil
+        guard let sessionID else {
+            return nil
+        }
+
+        return MumbleUserRemoveMessage(
+            sessionID: sessionID,
+            actorSessionID: actorSessionID,
+            reason: reason,
+            isBan: isBan
+        )
     }
 
     static func decodeUserState(from data: Data) -> MumbleUserStateMessage? {
@@ -1372,13 +1410,18 @@ private final class MumbleChannelListClient {
 
             applyUserState(userState)
         case .userRemove:
-            guard let sessionID = MumbleSessionMessageDecoder.decodeUserRemove(from: payload) else {
+            guard let userRemove = MumbleSessionMessageDecoder.decodeUserRemove(from: payload) else {
                 return
             }
 
-            cancelTalkStateReset(for: sessionID)
-            users.removeValue(forKey: sessionID)
-            emit(.talkStateChanged(sessionID: sessionID, talkState: .passive))
+            if userRemove.sessionID == currentSessionID {
+                finish(with: .disconnected(describeCurrentUserRemoval(userRemove)))
+                return
+            }
+
+            cancelTalkStateReset(for: userRemove.sessionID)
+            users.removeValue(forKey: userRemove.sessionID)
+            emit(.talkStateChanged(sessionID: userRemove.sessionID, talkState: .passive))
             emitUserSnapshot()
             updateAudioSessionState()
         default:
@@ -1417,6 +1460,43 @@ private final class MumbleChannelListClient {
             type: .cryptSetup,
             payload: MumbleSessionPayloads.cryptSetupPacket(clientNonce: cryptState.currentEncryptIV())
         )
+    }
+
+    private func describeCurrentUserRemoval(_ message: MumbleUserRemoveMessage) -> String {
+        let actorName = message.actorSessionID.flatMap { users[$0]?.name }
+        let trimmedReason = message.reason?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasReason = trimmedReason?.isEmpty == false
+
+        if message.isBan {
+            if let actorName, hasReason {
+                return "You were kicked and banned from the server by \(actorName): \(trimmedReason!)."
+            }
+
+            if let actorName {
+                return "You were kicked and banned from the server by \(actorName)."
+            }
+
+            if hasReason {
+                return "You were kicked and banned from the server: \(trimmedReason!)."
+            }
+
+            return "You were kicked and banned from the server."
+        }
+
+        if let actorName, hasReason {
+            return "You were kicked from the server by \(actorName): \(trimmedReason!)."
+        }
+
+        if let actorName {
+            return "You were kicked from the server by \(actorName)."
+        }
+
+        if hasReason {
+            return "You were removed from the server: \(trimmedReason!)."
+        }
+
+        return "You were removed from the server."
     }
 
     private func applyChannelState(_ message: MumbleChannelStateMessage) {

@@ -62,6 +62,22 @@ struct MumbleChannelListServiceTests {
     }
 
     @Test
+    func userRemoveDecoderParsesActorReasonAndBan() {
+        var payload = Data()
+        MumbleProtobufWire.appendVarintField(1, value: 42, to: &payload)
+        MumbleProtobufWire.appendVarintField(2, value: 7, to: &payload)
+        MumbleProtobufWire.appendStringField(3, value: "AFK in briefing", to: &payload)
+        MumbleProtobufWire.appendBoolField(4, value: true, to: &payload)
+
+        let decoded = MumbleSessionMessageDecoder.decodeUserRemove(from: payload)
+
+        #expect(decoded?.sessionID == 42)
+        #expect(decoded?.actorSessionID == 7)
+        #expect(decoded?.reason == "AFK in briefing")
+        #expect(decoded?.isBan == true)
+    }
+
+    @Test
     func joinChannelPacketEncodesSessionAndDestinationChannel() {
         let payload = MumbleSessionPayloads.joinChannelPacket(sessionID: 42, channelID: 7)
 
