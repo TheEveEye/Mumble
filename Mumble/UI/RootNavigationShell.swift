@@ -17,6 +17,7 @@ struct RootNavigationShell: View {
     @State private var channelConnectionHandle: MumbleChannelListConnectionHandle?
     @State private var channelSnapshot: [MumbleChannel] = []
     @State private var userSnapshot: [MumbleUser] = []
+    @State private var talkStatesBySessionID: [UInt32: MumbleUserTalkState] = [:]
     @State private var currentSessionID: UInt32?
     @State private var enteredServerPasswords: [UUID: String] = [:]
     @State private var isLoadingChannels = false
@@ -50,6 +51,7 @@ struct RootNavigationShell: View {
                 server: activeServer,
                 channels: channelSnapshot,
                 users: userSnapshot,
+                talkStatesBySessionID: talkStatesBySessionID,
                 currentSessionID: currentSessionID,
                 currentSessionChannelID: currentSessionUser?.channelID,
                 isLoadingChannels: isLoadingChannels,
@@ -160,6 +162,7 @@ struct RootNavigationShell: View {
             connectDialogSelectionID = nil
             channelSnapshot = []
             userSnapshot = []
+            talkStatesBySessionID = [:]
             currentSessionID = nil
             isLoadingChannels = false
             connectionStatus = "Not connected"
@@ -177,6 +180,7 @@ struct RootNavigationShell: View {
         connectedServerID = nil
         channelSnapshot = []
         userSnapshot = []
+        talkStatesBySessionID = [:]
         currentSessionID = nil
         isLoadingChannels = false
         connectionStatus = "Not connected"
@@ -207,6 +211,7 @@ struct RootNavigationShell: View {
         channelConnectionHandle?.cancel()
         channelSnapshot = []
         userSnapshot = []
+        talkStatesBySessionID = [:]
         currentSessionID = nil
         isLoadingChannels = true
         connectedServerID = serverID
@@ -254,6 +259,7 @@ struct RootNavigationShell: View {
             passwordPromptContext = nil
             currentSessionID = nil
             userSnapshot = []
+            talkStatesBySessionID = [:]
             isLoadingChannels = channelSnapshot.isEmpty
             connectionStatus = "Reconnecting to \(serverDisplayName)"
             appendLog(reason)
@@ -282,6 +288,16 @@ struct RootNavigationShell: View {
             }
 
             userSnapshot = users
+        case .talkStateChanged(let sessionID, let talkState):
+            guard connectedServerID == serverID else {
+                return
+            }
+
+            if talkState == .passive {
+                talkStatesBySessionID.removeValue(forKey: sessionID)
+            } else {
+                talkStatesBySessionID[sessionID] = talkState
+            }
         case .failed(let reason, let rejectType):
             certificateTrustPrompt = nil
             appendLog("Connection failed: \(reason)")
@@ -289,6 +305,7 @@ struct RootNavigationShell: View {
             connectedServerID = nil
             channelSnapshot = []
             userSnapshot = []
+            talkStatesBySessionID = [:]
             currentSessionID = nil
             isLoadingChannels = false
             connectionStatus = "Not connected"
@@ -314,6 +331,7 @@ struct RootNavigationShell: View {
             connectedServerID = nil
             channelSnapshot = []
             userSnapshot = []
+            talkStatesBySessionID = [:]
             currentSessionID = nil
             isLoadingChannels = false
             connectionStatus = "Not connected"

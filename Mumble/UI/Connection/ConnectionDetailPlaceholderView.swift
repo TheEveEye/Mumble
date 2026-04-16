@@ -4,6 +4,7 @@ struct ConnectionDetailPlaceholderView: View {
     let server: SavedServer?
     let channels: [MumbleChannel]
     let users: [MumbleUser]
+    let talkStatesBySessionID: [UInt32: MumbleUserTalkState]
     let currentSessionID: UInt32?
     let currentSessionChannelID: UInt32?
     let isLoadingChannels: Bool
@@ -24,6 +25,7 @@ struct ConnectionDetailPlaceholderView: View {
                         server: server,
                         channels: channels,
                         users: users,
+                        talkStatesBySessionID: talkStatesBySessionID,
                         currentSessionID: currentSessionID,
                         currentSessionChannelID: currentSessionChannelID,
                         isLoadingChannels: isLoadingChannels,

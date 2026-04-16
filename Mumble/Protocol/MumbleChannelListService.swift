@@ -32,6 +32,7 @@ struct MumbleUser: Identifiable, Equatable, Hashable, Sendable {
     let id: UInt32
     var name: String
     var channelID: UInt32?
+    var listeningChannelIDs: [UInt32]
     var registeredUserID: UInt32?
     var isServerMuted: Bool
     var isServerDeafened: Bool
@@ -48,6 +49,14 @@ struct MumbleUser: Identifiable, Equatable, Hashable, Sendable {
     }
 }
 
+enum MumbleUserTalkState: Equatable, Hashable, Sendable {
+    case passive
+    case talking
+    case shouting
+    case whispering
+    case channelListening
+}
+
 enum MumbleChannelListEvent: Sendable {
     case log(String)
     case certificateTrustRequired(MumbleCertificateTrustChallenge)
@@ -55,6 +64,7 @@ enum MumbleChannelListEvent: Sendable {
     case synchronized(welcomeText: String?, currentSessionID: UInt32?)
     case channelsUpdated([MumbleChannel])
     case usersUpdated([MumbleUser])
+    case talkStateChanged(sessionID: UInt32, talkState: MumbleUserTalkState)
     case failed(String, MumbleRejectType?)
     case disconnected(String?)
 }
@@ -197,6 +207,8 @@ struct MumbleUserStateMessage {
     let name: String?
     let registeredUserID: UInt32?
     let channelID: UInt32?
+    let listeningChannelIDsAdded: [UInt32]
+    let listeningChannelIDsRemoved: [UInt32]
     let isServerMuted: Bool?
     let isServerDeafened: Bool?
     let isSuppressed: Bool?
@@ -510,6 +522,8 @@ enum MumbleSessionMessageDecoder {
         var name: String?
         var registeredUserID: UInt32?
         var channelID: UInt32?
+        var listeningChannelIDsAdded: [UInt32] = []
+        var listeningChannelIDsRemoved: [UInt32] = []
         var isServerMuted: Bool?
         var isServerDeafened: Bool?
         var isSuppressed: Bool?
@@ -549,6 +563,22 @@ enum MumbleSessionMessageDecoder {
                 }
 
                 channelID = UInt32(exactly: value)
+            case (21, 0):
+                guard let value = MumbleProtobufWire.decodeVarint(from: payload, index: &index) else {
+                    return nil
+                }
+
+                if let channelID = UInt32(exactly: value) {
+                    listeningChannelIDsAdded.append(channelID)
+                }
+            case (22, 0):
+                guard let value = MumbleProtobufWire.decodeVarint(from: payload, index: &index) else {
+                    return nil
+                }
+
+                if let channelID = UInt32(exactly: value) {
+                    listeningChannelIDsRemoved.append(channelID)
+                }
             case (6, 0):
                 guard let value = MumbleProtobufWire.decodeVarint(from: payload, index: &index) else {
                     return nil
@@ -595,6 +625,8 @@ enum MumbleSessionMessageDecoder {
             name: name,
             registeredUserID: registeredUserID,
             channelID: channelID,
+            listeningChannelIDsAdded: listeningChannelIDsAdded,
+            listeningChannelIDsRemoved: listeningChannelIDsRemoved,
             isServerMuted: isServerMuted,
             isServerDeafened: isServerDeafened,
             isSuppressed: isSuppressed,
@@ -720,6 +752,7 @@ private final class MumbleChannelListClient {
     private var decryptedUDPDatagramCount = 0
     private var receivedVoicePacketCount = 0
     private var undecodedVoiceTransportCount = 0
+    private var talkStateResetWorkItems: [UInt32: DispatchWorkItem] = [:]
 
     init(
         target: MumbleConnectionTarget,
@@ -754,6 +787,7 @@ private final class MumbleChannelListClient {
 
             hasFinished = true
             pendingCertificateTrustChallenge = nil
+            cancelAllTalkStateResets()
             stopPingLoop()
             stopUDPPingLoop()
             stopReconnectLoop()
@@ -1200,6 +1234,7 @@ private final class MumbleChannelListClient {
                 )
             }
             Task { await self.audioPlayback.handleVoicePacket(voicePacket) }
+            updateTalkState(from: voicePacket)
         }
     }
 
@@ -1318,7 +1353,9 @@ private final class MumbleChannelListClient {
                 return
             }
 
+            cancelTalkStateReset(for: sessionID)
             users.removeValue(forKey: sessionID)
+            emit(.talkStateChanged(sessionID: sessionID, talkState: .passive))
             emitUserSnapshot()
             updateAudioSessionState()
         default:
@@ -1406,6 +1443,7 @@ private final class MumbleChannelListClient {
             id: message.sessionID,
             name: "User \(message.sessionID)",
             channelID: nil,
+            listeningChannelIDs: [],
             registeredUserID: nil,
             isServerMuted: false,
             isServerDeafened: false,
@@ -1424,6 +1462,18 @@ private final class MumbleChannelListClient {
 
         if let channelID = message.channelID {
             user.channelID = channelID
+        }
+
+        if !message.listeningChannelIDsAdded.isEmpty || !message.listeningChannelIDsRemoved.isEmpty {
+            var listeningChannelIDs = Set(user.listeningChannelIDs)
+            listeningChannelIDs.formUnion(message.listeningChannelIDsAdded)
+            listeningChannelIDs.subtract(message.listeningChannelIDsRemoved)
+
+            if let channelID = user.channelID {
+                listeningChannelIDs.remove(channelID)
+            }
+
+            user.listeningChannelIDs = listeningChannelIDs.sorted()
         }
 
         if let isServerMuted = message.isServerMuted {
@@ -1449,6 +1499,58 @@ private final class MumbleChannelListClient {
         users[message.sessionID] = user
         emitUserSnapshot()
         updateAudioSessionState()
+    }
+
+    private func updateTalkState(from packet: MumbleVoicePacket) {
+        guard users[packet.senderSession] != nil else {
+            return
+        }
+
+        let talkState = talkState(for: packet)
+        emit(.talkStateChanged(sessionID: packet.senderSession, talkState: talkState))
+
+        scheduleTalkStateReset(for: packet.senderSession, isTerminator: packet.isTerminator)
+    }
+
+    private func talkState(for packet: MumbleVoicePacket) -> MumbleUserTalkState {
+        switch packet.targetOrContext {
+        case 1:
+            return .shouting
+        case 2:
+            return .whispering
+        case 3:
+            return .channelListening
+        default:
+            return .talking
+        }
+    }
+
+    private func scheduleTalkStateReset(for sessionID: UInt32, isTerminator: Bool) {
+        cancelTalkStateReset(for: sessionID)
+
+        let resetDelay: TimeInterval = isTerminator ? 0.15 : 0.35
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self, self.users[sessionID] != nil else {
+                return
+            }
+
+            self.emit(.talkStateChanged(sessionID: sessionID, talkState: .passive))
+        }
+
+        talkStateResetWorkItems[sessionID] = workItem
+        queue.asyncAfter(deadline: .now() + resetDelay, execute: workItem)
+    }
+
+    private func cancelTalkStateReset(for sessionID: UInt32) {
+        talkStateResetWorkItems.removeValue(forKey: sessionID)?.cancel()
+    }
+
+    private func cancelAllTalkStateResets() {
+        for workItem in talkStateResetWorkItems.values {
+            workItem.cancel()
+        }
+
+        talkStateResetWorkItems.removeAll()
     }
 
     private func removeChannelTree(withID channelID: UInt32) {

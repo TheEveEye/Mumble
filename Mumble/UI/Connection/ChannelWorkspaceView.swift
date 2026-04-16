@@ -5,6 +5,7 @@ struct ChannelWorkspaceView: View {
     let server: SavedServer
     let channels: [MumbleChannel]
     let users: [MumbleUser]
+    let talkStatesBySessionID: [UInt32: MumbleUserTalkState]
     let currentSessionID: UInt32?
     let currentSessionChannelID: UInt32?
     let isLoadingChannels: Bool
@@ -22,6 +23,7 @@ struct ChannelWorkspaceView: View {
                 ChannelTreeView(
                     nodes: MumbleChannelTreeNode.makeTree(from: channels, users: users),
                     channelsByID: Dictionary(uniqueKeysWithValues: channels.map { ($0.id, $0) }),
+                    talkStatesBySessionID: talkStatesBySessionID,
                     linkedChannelIDsForCurrentSession: linkedChannelIDsForCurrentSession,
                     currentSessionID: currentSessionID,
                     currentSessionChannelID: currentSessionChannelID,
@@ -111,6 +113,7 @@ private enum DraggedMumbleUserPayload {
 private struct ChannelTreeView: View {
     let nodes: [MumbleChannelTreeNode]
     let channelsByID: [UInt32: MumbleChannel]
+    let talkStatesBySessionID: [UInt32: MumbleUserTalkState]
     let linkedChannelIDsForCurrentSession: Set<UInt32>
     let currentSessionID: UInt32?
     let currentSessionChannelID: UInt32?
@@ -132,6 +135,7 @@ private struct ChannelTreeView: View {
                         node: node,
                         depth: 0,
                         channelsByID: channelsByID,
+                        talkStatesBySessionID: talkStatesBySessionID,
                         linkedChannelIDsForCurrentSession: linkedChannelIDsForCurrentSession,
                         currentSessionID: currentSessionID,
                         currentSessionChannelID: currentSessionChannelID,
@@ -172,6 +176,7 @@ private struct ChannelTreeBranch: View {
     let node: MumbleChannelTreeNode
     let depth: Int
     let channelsByID: [UInt32: MumbleChannel]
+    let talkStatesBySessionID: [UInt32: MumbleUserTalkState]
     let linkedChannelIDsForCurrentSession: Set<UInt32>
     let currentSessionID: UInt32?
     let currentSessionChannelID: UInt32?
@@ -183,12 +188,13 @@ private struct ChannelTreeBranch: View {
     var body: some View {
         switch node.kind {
         case .user:
-            ChannelTreeRow(
-                node: node,
-                depth: depth,
-                channelsByID: channelsByID,
-                linkedChannelIDsForCurrentSession: linkedChannelIDsForCurrentSession,
-                isExpanded: nil,
+                ChannelTreeRow(
+                    node: node,
+                    depth: depth,
+                    channelsByID: channelsByID,
+                    talkStatesBySessionID: talkStatesBySessionID,
+                    linkedChannelIDsForCurrentSession: linkedChannelIDsForCurrentSession,
+                    isExpanded: nil,
                 onToggleExpansion: nil,
                 currentSessionChannelID: currentSessionChannelID,
                 onJoinChannel: onJoinChannel,
@@ -205,6 +211,7 @@ private struct ChannelTreeBranch: View {
                         node: node,
                         depth: depth,
                         channelsByID: channelsByID,
+                        talkStatesBySessionID: talkStatesBySessionID,
                         linkedChannelIDsForCurrentSession: linkedChannelIDsForCurrentSession,
                         isExpanded: children.isEmpty ? nil : isExpanded,
                         onToggleExpansion: children.isEmpty ? nil : {
@@ -222,6 +229,7 @@ private struct ChannelTreeBranch: View {
                                 node: child,
                                 depth: depth + 1,
                                 channelsByID: channelsByID,
+                                talkStatesBySessionID: talkStatesBySessionID,
                                 linkedChannelIDsForCurrentSession: linkedChannelIDsForCurrentSession,
                                 currentSessionID: currentSessionID,
                                 currentSessionChannelID: currentSessionChannelID,
@@ -244,6 +252,7 @@ private struct ChannelTreeRow: View {
     let node: MumbleChannelTreeNode
     let depth: Int
     let channelsByID: [UInt32: MumbleChannel]
+    let talkStatesBySessionID: [UInt32: MumbleUserTalkState]
     let linkedChannelIDsForCurrentSession: Set<UInt32>
     let isExpanded: Bool?
     let onToggleExpansion: (() -> Void)?
@@ -282,7 +291,12 @@ private struct ChannelTreeRow: View {
                 indentationSpacer
 
                 if let user = node.user {
-                    UserTreeRow(user: user, isCurrentSession: user.id == currentSessionID)
+                    UserTreeRow(
+                        user: user,
+                        userDisplayRole: node.userDisplayRole ?? .member,
+                        talkState: talkStatesBySessionID[user.id] ?? .passive,
+                        isCurrentSession: user.id == currentSessionID
+                    )
                 }
             }
 
@@ -449,13 +463,16 @@ private struct ChannelRowDropDelegate: DropDelegate {
 
 private struct UserTreeRow: View {
     let user: MumbleUser
+    let userDisplayRole: MumbleChannelTreeNode.UserDisplayRole
+    let talkState: MumbleUserTalkState
     let isCurrentSession: Bool
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "person.fill")
+            Image(systemName: talkState.indicatorSymbolName(for: userDisplayRole))
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.green)
+                .foregroundStyle(talkState.indicatorColor(for: userDisplayRole))
+                .help(talkState.helpText(for: userDisplayRole))
                 .frame(width: 12)
 
             Text(user.name)
@@ -516,7 +533,7 @@ private struct ChannelWorkspaceEmptyState: View {
 struct MumbleChannelTreeNode: Identifiable, Hashable {
     enum RowID: Hashable {
         case channel(UInt32)
-        case user(UInt32)
+        case user(sessionID: UInt32, channelID: UInt32, role: UserDisplayRole)
     }
 
     enum Kind: Hashable {
@@ -524,11 +541,17 @@ struct MumbleChannelTreeNode: Identifiable, Hashable {
         case user
     }
 
+    enum UserDisplayRole: Hashable {
+        case member
+        case listener
+    }
+
     let id: RowID
     let kind: Kind
     let title: String
     let channel: MumbleChannel?
     let user: MumbleUser?
+    let userDisplayRole: UserDisplayRole?
     let channelID: UInt32?
     let containsUsersInSubtree: Bool
     let children: [MumbleChannelTreeNode]?
@@ -545,17 +568,23 @@ struct MumbleChannelTreeNode: Identifiable, Hashable {
 
     static func makeTree(from channels: [MumbleChannel], users: [MumbleUser]) -> [MumbleChannelTreeNode] {
         let channelsByID = Dictionary(uniqueKeysWithValues: channels.map { ($0.id, $0) })
-        let usersByChannelID = Dictionary(grouping: users.compactMap { user -> (UInt32, MumbleUser)? in
-            guard let channelID = user.channelID, channelsByID[channelID] != nil else {
-                return nil
+        let usersByChannelID = Dictionary(grouping: users.flatMap { user -> [(UInt32, ChannelUserPlacement)] in
+            var placements: [(UInt32, ChannelUserPlacement)] = []
+
+            if let channelID = user.channelID, channelsByID[channelID] != nil {
+                placements.append((channelID, ChannelUserPlacement(user: user, role: .member)))
             }
 
-            return (channelID, user)
+            for channelID in user.listeningChannelIDs where channelsByID[channelID] != nil {
+                placements.append((channelID, ChannelUserPlacement(user: user, role: .listener)))
+            }
+
+            return placements
         }, by: \.0)
         .mapValues { groupedUsers in
             groupedUsers
                 .map(\.1)
-                .sorted(by: userSortComparator)
+                .sorted(by: userPlacementSortComparator)
         }
         let sortedChannels = channels.sorted(by: sortComparator)
 
@@ -575,19 +604,20 @@ struct MumbleChannelTreeNode: Identifiable, Hashable {
     private static func makeNode(
         from channel: MumbleChannel,
         channels: [MumbleChannel],
-        usersByChannelID: [UInt32: [MumbleUser]]
+        usersByChannelID: [UInt32: [ChannelUserPlacement]]
     ) -> MumbleChannelTreeNode {
         let childChannels = channels
             .filter { $0.parentID == channel.id }
             .sorted(by: sortComparator)
             .map { makeNode(from: $0, channels: channels, usersByChannelID: usersByChannelID) }
-        let childUsers = (usersByChannelID[channel.id] ?? []).map { user in
+        let childUsers = (usersByChannelID[channel.id] ?? []).map { placement in
             MumbleChannelTreeNode(
-                id: .user(user.id),
+                id: .user(sessionID: placement.user.id, channelID: channel.id, role: placement.role),
                 kind: .user,
-                title: user.name,
+                title: placement.user.name,
                 channel: nil,
-                user: user,
+                user: placement.user,
+                userDisplayRole: placement.role,
                 channelID: nil,
                 containsUsersInSubtree: true,
                 children: nil
@@ -604,6 +634,7 @@ struct MumbleChannelTreeNode: Identifiable, Hashable {
             title: channel.name,
             channel: channel,
             user: nil,
+            userDisplayRole: nil,
             channelID: channel.id,
             containsUsersInSubtree: containsUsersInSubtree,
             children: children.isEmpty ? nil : children
@@ -624,15 +655,24 @@ struct MumbleChannelTreeNode: Identifiable, Hashable {
         return lhs.position < rhs.position
     }
 
-    private static let userSortComparator: (MumbleUser, MumbleUser) -> Bool = { lhs, rhs in
-        let comparison = lhs.name.localizedStandardCompare(rhs.name)
+    private static let userPlacementSortComparator: (ChannelUserPlacement, ChannelUserPlacement) -> Bool = { lhs, rhs in
+        if lhs.role != rhs.role {
+            return lhs.role == .member
+        }
+
+        let comparison = lhs.user.name.localizedStandardCompare(rhs.user.name)
 
         if comparison == .orderedSame {
-            return lhs.id < rhs.id
+            return lhs.user.id < rhs.user.id
         }
 
         return comparison == .orderedAscending
     }
+}
+
+private struct ChannelUserPlacement: Hashable {
+    let user: MumbleUser
+    let role: MumbleChannelTreeNode.UserDisplayRole
 }
 
 private struct UserStatusBadge: Identifiable, Hashable {
@@ -640,6 +680,55 @@ private struct UserStatusBadge: Identifiable, Hashable {
     let systemImage: String
     let color: Color
     let helpText: String
+}
+
+private extension MumbleUserTalkState {
+    func indicatorSymbolName(for userDisplayRole: MumbleChannelTreeNode.UserDisplayRole) -> String {
+        switch userDisplayRole {
+        case .listener:
+            return "ear.fill"
+        case .member:
+            return "person.fill"
+        }
+    }
+
+    func indicatorColor(for userDisplayRole: MumbleChannelTreeNode.UserDisplayRole) -> Color {
+        switch userDisplayRole {
+        case .listener:
+            return .gray
+        case .member:
+            switch self {
+            case .passive:
+                return .green
+            case .talking, .whispering:
+                return .yellow
+            case .shouting:
+                return .blue
+            case .channelListening:
+                return .gray
+            }
+        }
+    }
+
+    func helpText(for userDisplayRole: MumbleChannelTreeNode.UserDisplayRole) -> String {
+        switch userDisplayRole {
+        case .listener:
+            return "Listening to this channel"
+        case .member:
+            switch self {
+            case .passive:
+                return "Idle"
+            case .talking:
+                return "Talking"
+            case .shouting:
+                return "Shouting"
+            case .whispering:
+                return "Whispering"
+            case .channelListening:
+                return "Talking via channel listener"
+            }
+        }
+    }
 }
 
 private extension MumbleUser {
