@@ -1,21 +1,14 @@
 import Foundation
 import AVFoundation
 
+struct MumbleAudioSessionContext {
+    let currentSessionID: UInt32?
+    let activeChannelID: UInt32?
+    let usersBySession: [UInt32: MumbleUser]
+    let channelsByID: [UInt32: MumbleChannel]
+}
+
 actor MumbleAudioPlaybackController {
-    private enum PlaybackRejectionReason: String {
-        case outputMuted = "output muted"
-        case missingCurrentSession = "missing current session"
-        case missingActiveChannel = "missing active channel"
-        case missingSenderChannel = "missing sender channel"
-        case differentChannel = "sender is in a different channel"
-    }
-
-    private struct SessionContext {
-        let currentSessionID: UInt32?
-        let activeChannelID: UInt32?
-        let usersBySession: [UInt32: MumbleUser]
-    }
-
     private let logger: AppLogger
     private let engine = AVAudioEngine()
     private let outputFormat = AVAudioFormat(
@@ -27,7 +20,12 @@ actor MumbleAudioPlaybackController {
 
     private var decoders: [UInt32: MumbleOpusDecoder] = [:]
     private var playerNodes: [UInt32: AVAudioPlayerNode] = [:]
-    private var context = SessionContext(currentSessionID: nil, activeChannelID: nil, usersBySession: [:])
+    private var context = MumbleAudioSessionContext(
+        currentSessionID: nil,
+        activeChannelID: nil,
+        usersBySession: [:],
+        channelsByID: [:]
+    )
     private var hasStartedEngine = false
     private var outputVolume: Float = 1.0
     private var isOutputMuted = false
@@ -48,14 +46,16 @@ actor MumbleAudioPlaybackController {
         )
     }
 
-    func updateSession(users: [MumbleUser], currentSessionID: UInt32?) {
+    func updateSession(channels: [MumbleChannel], users: [MumbleUser], currentSessionID: UInt32?) {
         let usersBySession = Dictionary(uniqueKeysWithValues: users.map { ($0.id, $0) })
+        let channelsByID = Dictionary(uniqueKeysWithValues: channels.map { ($0.id, $0) })
         let activeChannelID = currentSessionID.flatMap { usersBySession[$0]?.channelID }
 
-        context = SessionContext(
+        context = MumbleAudioSessionContext(
             currentSessionID: currentSessionID,
             activeChannelID: activeChannelID,
-            usersBySession: usersBySession
+            usersBySession: usersBySession,
+            channelsByID: channelsByID
         )
 
         let activeSessions = Set(users.map(\.id))
@@ -79,7 +79,12 @@ actor MumbleAudioPlaybackController {
             )
         }
 
-        guard shouldPlay(packet) else {
+        if let rejectionReason = MumbleAudioPlaybackPolicy.rejectionReason(
+            for: packet,
+            context: context,
+            isOutputMuted: isOutputMuted
+        ) {
+            logRejectedPacket(reason: rejectionReason, packet: packet)
             return
         }
 
@@ -125,37 +130,13 @@ actor MumbleAudioPlaybackController {
         }
 
         hasStartedEngine = false
-        context = SessionContext(currentSessionID: nil, activeChannelID: nil, usersBySession: [:])
+        context = MumbleAudioSessionContext(
+            currentSessionID: nil,
+            activeChannelID: nil,
+            usersBySession: [:],
+            channelsByID: [:]
+        )
         logger.info("Audio playback stopped and session state cleared.")
-    }
-
-    private func shouldPlay(_ packet: MumbleVoicePacket) -> Bool {
-        if isOutputMuted {
-            logRejectedPacket(reason: .outputMuted, packet: packet)
-            return false
-        }
-
-        guard let currentSessionID = context.currentSessionID, currentSessionID != 0 else {
-            logRejectedPacket(reason: .missingCurrentSession, packet: packet)
-            return false
-        }
-
-        guard let activeChannelID = context.activeChannelID else {
-            logRejectedPacket(reason: .missingActiveChannel, packet: packet)
-            return false
-        }
-
-        guard let senderChannelID = context.usersBySession[packet.senderSession]?.channelID else {
-            logRejectedPacket(reason: .missingSenderChannel, packet: packet)
-            return false
-        }
-
-        guard senderChannelID == activeChannelID else {
-            logRejectedPacket(reason: .differentChannel, packet: packet)
-            return false
-        }
-
-        return true
     }
 
     private func startEngineIfNeeded() throws {
@@ -242,4 +223,30 @@ actor MumbleAudioPlaybackController {
 
 enum MumbleAudioPlaybackError: Error {
     case decoderUnavailable
+}
+
+enum PlaybackRejectionReason: String {
+    case outputMuted = "output muted"
+    case missingCurrentSession = "missing current session"
+}
+
+enum MumbleAudioPlaybackPolicy {
+    nonisolated static func rejectionReason(
+        for packet: MumbleVoicePacket,
+        context: MumbleAudioSessionContext,
+        isOutputMuted: Bool
+    ) -> PlaybackRejectionReason? {
+        if isOutputMuted {
+            return .outputMuted
+        }
+
+        guard let currentSessionID = context.currentSessionID, currentSessionID != 0 else {
+            return .missingCurrentSession
+        }
+
+        _ = currentSessionID
+        _ = context
+        _ = packet
+        return nil
+    }
 }

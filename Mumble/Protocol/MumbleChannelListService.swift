@@ -28,6 +28,29 @@ struct MumbleChannel: Identifiable, Equatable, Hashable, Sendable {
     }
 }
 
+extension Dictionary where Key == UInt32, Value == MumbleChannel {
+    func linkedClosure(startingAt channelID: UInt32?) -> Set<UInt32> {
+        guard let channelID, self[channelID] != nil else {
+            return []
+        }
+
+        var seen: Set<UInt32> = [channelID]
+        var stack: [UInt32] = [channelID]
+
+        while let currentChannelID = stack.popLast() {
+            guard let channel = self[currentChannelID] else {
+                continue
+            }
+
+            for linkedChannelID in channel.linkedChannelIDs where seen.insert(linkedChannelID).inserted {
+                stack.append(linkedChannelID)
+            }
+        }
+
+        return seen
+    }
+}
+
 struct MumbleUser: Identifiable, Equatable, Hashable, Sendable {
     let id: UInt32
     var name: String
@@ -1581,6 +1604,7 @@ private final class MumbleChannelListClient {
         }
 
         emit(.channelsUpdated(snapshot))
+        updateAudioSessionState()
     }
 
     private func emitUserSnapshot() {
@@ -1598,7 +1622,7 @@ private final class MumbleChannelListClient {
     }
 
     private func updateAudioSessionState() {
-        let snapshot = users.values.sorted {
+        let userSnapshot = users.values.sorted {
             let comparison = $0.name.localizedStandardCompare($1.name)
 
             if comparison == .orderedSame {
@@ -1607,10 +1631,27 @@ private final class MumbleChannelListClient {
 
             return comparison == .orderedAscending
         }
+        let channelSnapshot = channels.values.sorted {
+            if $0.position == $1.position {
+                let comparison = $0.name.localizedStandardCompare($1.name)
+
+                if comparison == .orderedSame {
+                    return $0.id < $1.id
+                }
+
+                return comparison == .orderedAscending
+            }
+
+            return $0.position < $1.position
+        }
 
         let currentSessionID = currentSessionID
         Task {
-            await self.audioPlayback.updateSession(users: snapshot, currentSessionID: currentSessionID)
+            await self.audioPlayback.updateSession(
+                channels: channelSnapshot,
+                users: userSnapshot,
+                currentSessionID: currentSessionID
+            )
         }
     }
 

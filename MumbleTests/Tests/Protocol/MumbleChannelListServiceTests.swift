@@ -96,6 +96,7 @@ struct MumbleChannelListServiceTests {
                 id: 10,
                 name: "Bravo",
                 channelID: 1,
+                listeningChannelIDs: [],
                 registeredUserID: 1,
                 isServerMuted: false,
                 isServerDeafened: false,
@@ -107,6 +108,7 @@ struct MumbleChannelListServiceTests {
                 id: 11,
                 name: "Alpha",
                 channelID: 3,
+                listeningChannelIDs: [],
                 registeredUserID: nil,
                 isServerMuted: false,
                 isServerDeafened: false,
@@ -118,14 +120,28 @@ struct MumbleChannelListServiceTests {
 
         let tree = MumbleChannelTreeNode.makeTree(from: channels, users: users)
 
-        #expect(tree.map(\.title) == ["Root"])
-        #expect(tree.first?.children?.map(\.title) == ["Fleets", "General"])
-        #expect(tree.first?.children?.first?.children?.map(\.title) == ["Bravo", "Command"])
-        #expect(tree.first?.children?.first?.children?.last?.children?.map(\.title) == ["Alpha"])
+        #expect(tree.map { $0.title } == ["Root"])
+        #expect(tree.first?.children?.map { $0.title } == ["Fleets", "General"])
+        #expect(tree.first?.children?.first?.children?.map { $0.title } == ["Bravo", "Command"])
+        #expect(tree.first?.children?.first?.children?.last?.children?.map { $0.title } == ["Alpha"])
         #expect(tree.first?.children?.last?.channel?.isLinked == true)
         #expect(tree.first?.children?.first?.children?.last?.channel?.isLinked == true)
         #expect(tree.first?.channelOccupancyStates.map(\.0) == [0, 1, 3, 2])
         #expect(tree.first?.channelOccupancyStates.map(\.1) == [true, true, true, false])
+    }
+
+    @Test
+    func linkedChannelClosureIncludesTransitiveLinks() {
+        let channelsByID: [UInt32: MumbleChannel] = [
+            10: MumbleChannel(id: 10, name: "A", parentID: nil, position: 0, linkedChannelIDs: [20]),
+            20: MumbleChannel(id: 20, name: "B", parentID: nil, position: 1, linkedChannelIDs: [10, 30]),
+            30: MumbleChannel(id: 30, name: "C", parentID: nil, position: 2, linkedChannelIDs: [20]),
+            40: MumbleChannel(id: 40, name: "D", parentID: nil, position: 3, linkedChannelIDs: []),
+        ]
+
+        #expect(channelsByID.linkedClosure(startingAt: 10) == Set<UInt32>([10, 20, 30]))
+        #expect(channelsByID.linkedClosure(startingAt: 30) == Set<UInt32>([10, 20, 30]))
+        #expect(channelsByID.linkedClosure(startingAt: 40) == Set<UInt32>([40]))
     }
 
     @Test

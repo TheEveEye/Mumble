@@ -36,16 +36,10 @@ struct ChannelWorkspaceView: View {
     }
 
     private var linkedChannelIDsForCurrentSession: Set<UInt32> {
-        guard let currentSessionChannelID else {
-            return []
-        }
-
         let channelsByID = Dictionary(uniqueKeysWithValues: channels.map { ($0.id, $0) })
-        guard let currentChannel = channelsByID[currentSessionChannelID] else {
-            return []
-        }
-
-        return Set(currentChannel.linkedChannelIDs).subtracting([currentSessionChannelID])
+        return channelsByID
+            .linkedClosure(startingAt: currentSessionChannelID)
+            .subtracting(currentSessionChannelID.map { [$0] } ?? [])
     }
 }
 
@@ -700,10 +694,12 @@ private extension MumbleUserTalkState {
             switch self {
             case .passive:
                 return .green
-            case .talking, .whispering:
-                return .yellow
-            case .shouting:
+            case .talking:
                 return .blue
+            case .shouting:
+                return .yellow
+            case .whispering:
+                return .purple
             case .channelListening:
                 return .gray
             }
