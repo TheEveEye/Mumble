@@ -463,8 +463,7 @@ private struct UserTreeRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: talkState.indicatorSymbolName(for: userDisplayRole))
-                .font(.system(size: 12, weight: .semibold))
+            indicatorImage
                 .foregroundStyle(talkState.indicatorColor(for: userDisplayRole))
                 .help(talkState.helpText(for: userDisplayRole))
                 .frame(width: 12)
@@ -486,6 +485,25 @@ private struct UserTreeRow: View {
         }
         .onDrag {
             DraggedMumbleUserPayload.itemProvider(for: user.id)
+        }
+    }
+
+    @ViewBuilder
+    private var indicatorImage: some View {
+        switch userDisplayRole {
+        case .listener:
+            Image(systemName: "ear.fill")
+                .font(.system(size: 12, weight: .semibold))
+        case .member:
+            switch talkState {
+            case .passive:
+                Image(systemName: "person.fill")
+                    .font(.system(size: 12, weight: .semibold))
+            case .talking, .whispering, .shouting, .channelListening:
+                Image("person.radiowaves.left.and.right.fill")
+                    .renderingMode(.template)
+                    .font(.system(size: 12, weight: .semibold))
+            }
         }
     }
 }
@@ -677,15 +695,6 @@ private struct UserStatusBadge: Identifiable, Hashable {
 }
 
 private extension MumbleUserTalkState {
-    func indicatorSymbolName(for userDisplayRole: MumbleChannelTreeNode.UserDisplayRole) -> String {
-        switch userDisplayRole {
-        case .listener:
-            return "ear.fill"
-        case .member:
-            return "person.fill"
-        }
-    }
-
     func indicatorColor(for userDisplayRole: MumbleChannelTreeNode.UserDisplayRole) -> Color {
         switch userDisplayRole {
         case .listener:
