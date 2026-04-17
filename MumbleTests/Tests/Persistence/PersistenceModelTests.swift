@@ -105,6 +105,19 @@ struct PersistenceModelTests {
     }
 
     @Test
+    func audioPreferencesNormalizePushToTalkHotkeys() {
+        let preferences = AudioPreferences(
+            localPushToTalkKey: "  AB ",
+            shoutPushToTalkKey: " \n"
+        )
+
+        let parsedLocalHotkey = MumbleHotkey.parse(preferences.localPushToTalkKey)
+
+        #expect(parsedLocalHotkey?.displayName == "A")
+        #expect(preferences.shoutPushToTalkKey.isEmpty)
+    }
+
+    @Test
     func recentConnectionTracksDurationAfterDisconnect() {
         let start = Date(timeIntervalSince1970: 1_000)
         let end = start.addingTimeInterval(42)

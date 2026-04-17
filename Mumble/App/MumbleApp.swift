@@ -10,5 +10,10 @@ struct MumbleApp: App {
             RootNavigationShell(dependencies: dependencies)
         }
         .modelContainer(dependencies.persistence.container)
+
+        Settings {
+            SettingsView()
+        }
+        .modelContainer(dependencies.persistence.container)
     }
 }

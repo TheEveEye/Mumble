@@ -133,15 +133,21 @@ enum MumbleRejectType: UInt64, Sendable {
 final class MumbleChannelListConnectionHandle {
     private let cancellation: () -> Void
     private let userMove: (UInt32, UInt32) -> Void
+    private let transmitStart: (MumblePushToTalkMode) -> Void
+    private let transmitStop: () -> Void
     private let trustDecision: (UUID, Bool, Bool) -> Void
 
     init(
         cancellation: @escaping () -> Void,
         userMove: @escaping (UInt32, UInt32) -> Void,
+        transmitStart: @escaping (MumblePushToTalkMode) -> Void,
+        transmitStop: @escaping () -> Void,
         trustDecision: @escaping (UUID, Bool, Bool) -> Void
     ) {
         self.cancellation = cancellation
         self.userMove = userMove
+        self.transmitStart = transmitStart
+        self.transmitStop = transmitStop
         self.trustDecision = trustDecision
     }
 
@@ -151,6 +157,14 @@ final class MumbleChannelListConnectionHandle {
 
     func joinChannel(sessionID: UInt32, channelID: UInt32) {
         userMove(sessionID, channelID)
+    }
+
+    func startTransmitting(mode: MumblePushToTalkMode) {
+        transmitStart(mode)
+    }
+
+    func stopTransmitting() {
+        transmitStop()
     }
 
     func resolveCertificateTrust(challengeID: UUID, accept: Bool, remember: Bool) {
@@ -175,6 +189,8 @@ struct MumbleChannelListService: Sendable {
 
     func connect(
         to target: MumbleConnectionTarget,
+        inputVolume: Double,
+        isMicrophoneMuted: Bool,
         onEvent: @escaping @Sendable (MumbleChannelListEvent) -> Void
     ) -> MumbleChannelListConnectionHandle {
         let client = MumbleChannelListClient(
@@ -182,6 +198,8 @@ struct MumbleChannelListService: Sendable {
             logger: logger,
             trustedCertificateStore: trustedCertificateStore,
             audioPlayback: audioPlayback,
+            inputVolume: inputVolume,
+            isMicrophoneMuted: isMicrophoneMuted,
             onEvent: onEvent
         )
         client.start()
@@ -192,6 +210,12 @@ struct MumbleChannelListService: Sendable {
             },
             userMove: { sessionID, channelID in
                 client.moveUser(sessionID: sessionID, to: channelID)
+            },
+            transmitStart: { mode in
+                client.startTransmitting(mode: mode)
+            },
+            transmitStop: {
+                client.stopTransmitting()
             },
             trustDecision: { challengeID, accept, remember in
                 client.resolveCertificateTrust(
@@ -813,21 +837,36 @@ private final class MumbleChannelListClient {
     private var decryptedUDPDatagramCount = 0
     private var receivedVoicePacketCount = 0
     private var undecodedVoiceTransportCount = 0
+    private var sentVoicePacketCount = 0
     private var talkStateResetWorkItems: [UInt32: DispatchWorkItem] = [:]
+    private var isPushToTalkActive = false
+    private var activePushToTalkMode: MumblePushToTalkMode?
+    private let inputVolume: Double
+    private let isMicrophoneMuted: Bool
+    private lazy var audioCapture = MumbleAudioCaptureController(logger: logger) { [weak self] frame in
+        self?.queue.async {
+            self?.sendCapturedVoiceFrame(frame)
+        }
+    }
 
     init(
         target: MumbleConnectionTarget,
         logger: AppLogger,
         trustedCertificateStore: TrustedCertificateStore,
         audioPlayback: MumbleAudioPlaybackController,
+        inputVolume: Double,
+        isMicrophoneMuted: Bool,
         onEvent: @escaping @Sendable (MumbleChannelListEvent) -> Void
     ) {
         self.target = target
         self.logger = logger
         self.trustedCertificateStore = trustedCertificateStore
         self.audioPlayback = audioPlayback
+        self.inputVolume = inputVolume
+        self.isMicrophoneMuted = isMicrophoneMuted
         self.onEvent = onEvent
         queue = DispatchQueue(label: "dev.kiwiapps.Mumble.protocol.channel-list.\(UUID().uuidString)")
+        audioCapture.updatePreferences(inputVolume: inputVolume, isMicrophoneMuted: isMicrophoneMuted)
     }
 
     func start() {
@@ -848,11 +887,13 @@ private final class MumbleChannelListClient {
 
             hasFinished = true
             pendingCertificateTrustChallenge = nil
+            stopTransmittingInternal()
             cancelAllTalkStateResets()
             stopPingLoop()
             stopUDPPingLoop()
             stopReconnectLoop()
             teardownCurrentConnection()
+            audioCapture.stop()
             Task { await self.audioPlayback.stop() }
         }
     }
@@ -921,6 +962,92 @@ private final class MumbleChannelListClient {
         }
     }
 
+    func startTransmitting(mode: MumblePushToTalkMode) {
+        queue.async { [weak self] in
+            self?.startTransmittingInternal(mode: mode)
+        }
+    }
+
+    func stopTransmitting() {
+        queue.async { [weak self] in
+            self?.stopTransmittingInternal()
+        }
+    }
+
+    private func startTransmittingInternal(mode: MumblePushToTalkMode) {
+        guard !hasFinished else {
+            return
+        }
+
+        if isPushToTalkActive {
+            guard activePushToTalkMode != mode else {
+                return
+            }
+
+            stopTransmittingInternal()
+        }
+
+        guard let currentSessionID, currentSessionID != 0 else {
+            logger.debug("Ignoring push-to-talk before session synchronization for \(target.endpointDescription)")
+            return
+        }
+
+        guard users[currentSessionID]?.channelID != nil else {
+            logger.debug("Ignoring push-to-talk before current channel is known for \(target.endpointDescription)")
+            return
+        }
+
+        isPushToTalkActive = true
+        activePushToTalkMode = mode
+        emit(.talkStateChanged(sessionID: currentSessionID, talkState: mode.talkState))
+        audioCapture.startTransmitting(mode: mode)
+    }
+
+    private func stopTransmittingInternal() {
+        guard isPushToTalkActive else {
+            return
+        }
+
+        isPushToTalkActive = false
+        activePushToTalkMode = nil
+        audioCapture.stopTransmitting()
+
+        if let currentSessionID, users[currentSessionID] != nil {
+            emit(.talkStateChanged(sessionID: currentSessionID, talkState: .passive))
+        }
+    }
+
+    private func sendCapturedVoiceFrame(_ frame: MumbleTransmitAudioFrame) {
+        guard !hasFinished, currentSessionID != nil else {
+            return
+        }
+
+        guard let packet = MumbleUDPVoicePacketEncoder.encodeLegacyClientOpusPacket(
+            frameNumber: frame.frameNumber,
+            payload: frame.payload,
+            isTerminator: frame.isTerminator,
+            targetOrContext: frame.targetOrContext
+        ) else {
+            logger.error("Failed to encode outbound Mumble voice packet for \(target.endpointDescription).")
+            return
+        }
+
+        sentVoicePacketCount += 1
+        if shouldLogVoiceTransportEvent(number: sentVoicePacketCount) {
+            logger.info(
+                "Sending voice packet #\(sentVoicePacketCount) to \(target.endpointDescription), " +
+                "frame=\(frame.frameNumber), payloadBytes=\(frame.payload.count), " +
+                "transport=\(cryptState.isValid ? "UDP" : "TCP tunnel"), terminator=\(frame.isTerminator)"
+            )
+        }
+
+        if cryptState.isValid, let encryptedPacket = cryptState.encrypt(packet) {
+            sendUDPMessage(encryptedPacket)
+        } else {
+            sendMessage(type: .udpTunnel, payload: packet)
+        }
+    }
+
     private func startConnectionAttempt() {
         guard !hasFinished else {
             return
@@ -940,6 +1067,9 @@ private final class MumbleChannelListClient {
         decryptedUDPDatagramCount = 0
         receivedVoicePacketCount = 0
         undecodedVoiceTransportCount = 0
+        sentVoicePacketCount = 0
+        stopTransmittingInternal()
+        audioCapture.updatePreferences(inputVolume: inputVolume, isMicrophoneMuted: isMicrophoneMuted)
         Task { await self.audioPlayback.stop() }
 
         let connection = makeConnection()
@@ -1746,11 +1876,13 @@ private final class MumbleChannelListClient {
 
         hasFinished = true
         pendingCertificateTrustChallenge = nil
+        stopTransmittingInternal()
         stopPingLoop()
         stopUDPPingLoop()
         stopReconnectLoop()
         emit(event)
         teardownCurrentConnection()
+        audioCapture.stop()
         Task { await self.audioPlayback.stop() }
     }
 
@@ -1762,6 +1894,8 @@ private final class MumbleChannelListClient {
         stopPingLoop()
         stopUDPPingLoop()
         pendingCertificateTrustChallenge = nil
+        stopTransmittingInternal()
+        audioCapture.stop()
         teardownCurrentConnection()
         scheduleReconnect(after: reason)
     }
@@ -1785,6 +1919,7 @@ private final class MumbleChannelListClient {
         let delay = MumbleReconnectPolicy.delay(forAttempt: nextAttempt)
         users = [:]
         currentSessionID = nil
+        isPushToTalkActive = false
         emit(.usersUpdated([]))
         emit(
             .reconnecting(

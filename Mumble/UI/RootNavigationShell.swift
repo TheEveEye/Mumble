@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import SwiftUI
 import SwiftData
 
@@ -7,6 +8,7 @@ struct RootNavigationShell: View {
 
     @Environment(\.modelContext) private var modelContext
     @Query private var servers: [SavedServer]
+    @Query private var audioPreferences: [AudioPreferences]
 
     @State private var isPresentingConnectDialog = true
     @State private var connectDialogSelectionID: UUID?
@@ -25,6 +27,13 @@ struct RootNavigationShell: View {
     @State private var connectionStatus = "Not connected"
     @State private var passwordPromptContext: ServerPasswordPromptContext?
     @State private var certificateTrustPrompt: MumbleCertificateTrustChallenge?
+    @State private var localPushToTalkMonitor: Any?
+    @State private var globalPushToTalkMonitor: Any?
+    @State private var activePushToTalkMode: MumblePushToTalkMode?
+    @State private var activePushToTalkHotkey: MumbleHotkey?
+    @State private var localPushToTalkHotkey: MumbleHotkey?
+    @State private var shoutPushToTalkHotkey: MumbleHotkey?
+    @State private var hasPromptedForBackgroundInputAccess = false
 
     private var activeServer: SavedServer? {
         guard let connectedServerID else {
@@ -40,6 +49,13 @@ struct RootNavigationShell: View {
         }
 
         return userSnapshot.first(where: { $0.id == currentSessionID })
+    }
+
+    private var hotkeyConfiguration: String {
+        let preferences = audioPreferences.first
+        let localKey = AudioPreferences.normalizeHotkey(preferences?.localPushToTalkKey ?? "#")
+        let shoutKey = AudioPreferences.normalizeHotkey(preferences?.shoutPushToTalkKey ?? "")
+        return "\(localKey)\u{0}\(shoutKey)"
     }
 
     var body: some View {
@@ -64,9 +80,13 @@ struct RootNavigationShell: View {
                 try dependencies.persistence.ensureRequiredData(in: modelContext)
                 try configureAudioPlaybackPreferences()
                 syncActiveServer()
+                syncPushToTalkHotkeys()
             } catch {
                 dependencies.logger.error("Failed to bootstrap persistent data: \(error.localizedDescription)")
             }
+        }
+        .onChange(of: hotkeyConfiguration) {
+            syncPushToTalkHotkeys()
         }
         .onChange(of: servers.count) {
             syncActiveServer()
@@ -106,6 +126,8 @@ struct RootNavigationShell: View {
         .frame(minWidth: 900, minHeight: 560)
         .navigationTitle(activeServer?.displayName ?? "Mumble")
         .onDisappear {
+            removePushToTalkMonitor()
+            resetPushToTalk()
             channelConnectionHandle?.cancel()
         }
         .toolbar {
@@ -136,10 +158,9 @@ struct RootNavigationShell: View {
                 }
                 .disabled(true)
 
-                Button {} label: {
+                SettingsLink {
                     Image(systemName: "gearshape.fill")
                 }
-                .disabled(true)
 
                 Button {} label: {
                     Image(systemName: "line.3.horizontal.decrease.circle")
@@ -205,8 +226,10 @@ struct RootNavigationShell: View {
         let serverID = server.id
         let serverDisplayName = server.displayName
         let endpointDescription = server.endpointDescription
+        let audioInputPreferences = currentAudioInputPreferences()
 
         passwordPromptContext = nil
+        resetPushToTalk()
         connectionAttemptID = attemptID
         channelConnectionHandle?.cancel()
         channelSnapshot = []
@@ -228,7 +251,11 @@ struct RootNavigationShell: View {
             password: resolvedPassword(for: server, override: password)
         )
 
-        channelConnectionHandle = dependencies.channelList.connect(to: target) { event in
+        channelConnectionHandle = dependencies.channelList.connect(
+            to: target,
+            inputVolume: audioInputPreferences.inputVolume,
+            isMicrophoneMuted: audioInputPreferences.isMicrophoneMuted
+        ) { event in
             Task { @MainActor in
                 guard connectionAttemptID == attemptID else {
                     return
@@ -255,6 +282,7 @@ struct RootNavigationShell: View {
             appendLog("Certificate trust confirmation required for \(challenge.endpointDescription).")
             certificateTrustPrompt = challenge
         case .reconnecting(let reason, let attempt, let maximumAttempts, let delay):
+            resetPushToTalk()
             certificateTrustPrompt = nil
             passwordPromptContext = nil
             currentSessionID = nil
@@ -299,6 +327,7 @@ struct RootNavigationShell: View {
                 talkStatesBySessionID[sessionID] = talkState
             }
         case .failed(let reason, let rejectType):
+            resetPushToTalk()
             certificateTrustPrompt = nil
             appendLog("Connection failed: \(reason)")
             channelConnectionHandle = nil
@@ -322,6 +351,7 @@ struct RootNavigationShell: View {
                 )
             }
         case .disconnected(let reason):
+            resetPushToTalk()
             certificateTrustPrompt = nil
             if let reason, !reason.isEmpty {
                 appendLog(reason)
@@ -407,6 +437,169 @@ struct RootNavigationShell: View {
                 isOutputMuted: audioPreferences.isOutputMuted
             )
         }
+    }
+
+    private func currentAudioInputPreferences() -> (inputVolume: Double, isMicrophoneMuted: Bool) {
+        do {
+            let descriptor = FetchDescriptor<AudioPreferences>()
+            guard let audioPreferences = try modelContext.fetch(descriptor).first else {
+                return (1.0, false)
+            }
+
+            return (audioPreferences.inputVolume, audioPreferences.isMicrophoneMuted)
+        } catch {
+            dependencies.logger.error("Failed to load audio input preferences: \(error.localizedDescription)")
+            return (1.0, false)
+        }
+    }
+
+    private func installPushToTalkMonitor() {
+        removePushToTalkMonitor()
+        ensureBackgroundInputAccessIfNeeded()
+
+        let eventMask: NSEvent.EventTypeMask = [
+            .keyDown,
+            .keyUp,
+            .otherMouseDown,
+            .otherMouseUp,
+            .flagsChanged,
+            .systemDefined,
+        ]
+
+        localPushToTalkMonitor = NSEvent.addLocalMonitorForEvents(matching: eventMask) { event in
+            handlePushToTalkEvent(event, consumeEvents: true)
+        }
+
+        globalPushToTalkMonitor = NSEvent.addGlobalMonitorForEvents(matching: eventMask) { event in
+            _ = handlePushToTalkEvent(event, consumeEvents: false)
+        }
+    }
+
+    private func removePushToTalkMonitor() {
+        if let localPushToTalkMonitor {
+            NSEvent.removeMonitor(localPushToTalkMonitor)
+            self.localPushToTalkMonitor = nil
+        }
+
+        if let globalPushToTalkMonitor {
+            NSEvent.removeMonitor(globalPushToTalkMonitor)
+            self.globalPushToTalkMonitor = nil
+        }
+    }
+
+    private func syncPushToTalkHotkeys() {
+        let preferences = audioPreferences.first
+        localPushToTalkHotkey = MumbleHotkey.parse(
+            AudioPreferences.normalizeHotkey(preferences?.localPushToTalkKey ?? "#")
+        )
+        shoutPushToTalkHotkey = MumbleHotkey.parse(
+            AudioPreferences.normalizeHotkey(preferences?.shoutPushToTalkKey ?? "")
+        )
+
+        if
+            let activePushToTalkHotkey,
+            activePushToTalkHotkey != localPushToTalkHotkey,
+            activePushToTalkHotkey != shoutPushToTalkHotkey
+        {
+            resetPushToTalk()
+        }
+
+        installPushToTalkMonitor()
+    }
+
+    private func handlePushToTalkEvent(_ event: NSEvent, consumeEvents: Bool) -> NSEvent? {
+        if event.type == .flagsChanged {
+            guard
+                let currentPushToTalkHotkey = activePushToTalkHotkey,
+                currentPushToTalkHotkey.modifiersStillPressed(in: event.modifierFlags) == false
+            else {
+                return event
+            }
+
+            activePushToTalkHotkey = nil
+            activePushToTalkMode = nil
+            stopPushToTalk()
+            return consumeEvents ? nil : event
+        }
+
+        if let (mode, hotkey) = pushToTalkBinding(for: event) {
+            if event.type == .keyDown || event.type == .otherMouseDown {
+                if event.type == .keyDown && event.isARepeat {
+                    return consumeEvents ? nil : event
+                }
+
+                if activePushToTalkMode != mode || activePushToTalkHotkey != hotkey {
+                    activePushToTalkMode = mode
+                    activePushToTalkHotkey = hotkey
+                    startPushToTalk(mode: mode)
+                }
+                return consumeEvents ? nil : event
+            }
+        }
+
+        guard let currentPushToTalkHotkey = activePushToTalkHotkey, currentPushToTalkHotkey.matchesRelease(event: event) else {
+            return event
+        }
+
+        activePushToTalkHotkey = nil
+        activePushToTalkMode = nil
+
+        switch event.type {
+        case .keyUp, .otherMouseUp:
+            stopPushToTalk()
+            return consumeEvents ? nil : event
+        default:
+            return event
+        }
+    }
+
+    private func ensureBackgroundInputAccessIfNeeded() {
+        guard hasPromptedForBackgroundInputAccess == false else {
+            return
+        }
+
+        hasPromptedForBackgroundInputAccess = true
+
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        let isTrusted = AXIsProcessTrustedWithOptions(options)
+
+        if isTrusted == false {
+            dependencies.logger.info(
+                "Background push-to-talk needs Accessibility access. macOS should prompt for it in System Settings."
+            )
+            appendLog("Background push-to-talk requires Accessibility access. Allow Mumble in System Settings if keys do not register while the app is unfocused.")
+        }
+    }
+
+    private func pushToTalkBinding(for event: NSEvent) -> (MumblePushToTalkMode, MumbleHotkey)? {
+        if let shoutPushToTalkHotkey, shoutPushToTalkHotkey.matchesPress(event: event) {
+            return (.linkedChannels, shoutPushToTalkHotkey)
+        }
+
+        if let localPushToTalkHotkey, localPushToTalkHotkey.matchesPress(event: event) {
+            return (.localChannel, localPushToTalkHotkey)
+        }
+
+        return nil
+    }
+
+
+    private func startPushToTalk(mode: MumblePushToTalkMode) {
+        guard connectedServerID != nil, currentSessionID != nil else {
+            return
+        }
+
+        channelConnectionHandle?.startTransmitting(mode: mode)
+    }
+
+    private func stopPushToTalk() {
+        channelConnectionHandle?.stopTransmitting()
+    }
+
+    private func resetPushToTalk() {
+        activePushToTalkMode = nil
+        activePushToTalkHotkey = nil
+        stopPushToTalk()
     }
 
     private func formattedReconnectDelay(_ delay: TimeInterval) -> String {
