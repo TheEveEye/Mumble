@@ -7,9 +7,9 @@ enum MumblePushToTalkMode: String, CaseIterable, Sendable {
     var targetOrContext: UInt32 {
         switch self {
         case .localChannel:
-            return 0
+            return MumbleSessionPayloads.localChannelVoiceTargetID
         case .linkedChannels:
-            return 1
+            return 0
         }
     }
 
@@ -18,7 +18,7 @@ enum MumblePushToTalkMode: String, CaseIterable, Sendable {
         case .localChannel:
             return .talking
         case .linkedChannels:
-            return .shouting
+            return .talking
         }
     }
 }

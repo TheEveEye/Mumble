@@ -100,6 +100,40 @@ struct MumbleChannelListServiceTests {
     }
 
     @Test
+    func linkedChannelVoiceTargetPacketEncodesLinkedChannelRegistration() {
+        let payload = MumbleSessionPayloads.linkedChannelVoiceTargetPacket(channelID: 63)
+
+        let topLevelFields = decodeTopLevelFields(from: payload)
+        #expect(topLevelFields.varints[1] == [UInt64(MumbleSessionPayloads.linkedChannelVoiceTargetID)])
+
+        guard let targetPayload = topLevelFields.bytes[2]?.first else {
+            Issue.record("Expected nested voice target payload")
+            return
+        }
+
+        let targetFields = decodeTopLevelFields(from: targetPayload)
+        #expect(targetFields.varints[2] == [63])
+        #expect(targetFields.varints[4] == [1])
+    }
+
+    @Test
+    func localChannelVoiceTargetPacketEncodesChannelWithoutLinkedFlag() {
+        let payload = MumbleSessionPayloads.localChannelVoiceTargetPacket(channelID: 63)
+
+        let topLevelFields = decodeTopLevelFields(from: payload)
+        #expect(topLevelFields.varints[1] == [UInt64(MumbleSessionPayloads.localChannelVoiceTargetID)])
+
+        guard let targetPayload = topLevelFields.bytes[2]?.first else {
+            Issue.record("Expected nested voice target payload")
+            return
+        }
+
+        let targetFields = decodeTopLevelFields(from: targetPayload)
+        #expect(targetFields.varints[2] == [63])
+        #expect(targetFields.varints[4] == nil)
+    }
+
+    @Test
     func channelTreeBuilderCreatesHierarchyWithUsers() {
         let channels = [
             MumbleChannel(id: 0, name: "Root", parentID: nil, position: 0, linkedChannelIDs: []),
@@ -147,6 +181,58 @@ struct MumbleChannelListServiceTests {
     }
 
     @Test
+    func channelTreeVisibleRowsFlattenExpandedBranches() {
+        let channels = [
+            MumbleChannel(id: 0, name: "Root", parentID: nil, position: 0, linkedChannelIDs: []),
+            MumbleChannel(id: 1, name: "Fleets", parentID: 0, position: 0, linkedChannelIDs: []),
+            MumbleChannel(id: 2, name: "General", parentID: 0, position: 2, linkedChannelIDs: []),
+            MumbleChannel(id: 3, name: "Command", parentID: 1, position: 1, linkedChannelIDs: []),
+        ]
+        let users = [
+            makeUser(id: 10, name: "Bravo", channelID: 1),
+            makeUser(id: 11, name: "Alpha", channelID: 3),
+        ]
+        let tree = MumbleChannelTreeNode.makeTree(from: channels, users: users)
+        let occupancyByChannelID = Dictionary(uniqueKeysWithValues: tree.flatMap(\.channelOccupancyStates))
+
+        let defaultRows = ChannelTreeVisibleRow.makeVisibleRows(
+            from: tree,
+            expansionOverrides: [:],
+            occupancyByChannelID: occupancyByChannelID
+        )
+        #expect(defaultRows.map(\.title) == ["Root", "Fleets", "Bravo", "Command", "Alpha", "General"])
+        #expect(defaultRows.map(\.depth) == [0, 1, 2, 2, 3, 1])
+
+        let collapsedRows = ChannelTreeVisibleRow.makeVisibleRows(
+            from: tree,
+            expansionOverrides: [1: false],
+            occupancyByChannelID: occupancyByChannelID
+        )
+        #expect(collapsedRows.map(\.title) == ["Root", "Fleets", "General"])
+    }
+
+    @Test
+    func channelTreeBuilderHandlesLargeFlatHierarchy() {
+        var channels = [
+            MumbleChannel(id: 0, name: "Root", parentID: nil, position: 0, linkedChannelIDs: [])
+        ]
+        channels.append(
+            contentsOf: (1...2_000).map {
+                MumbleChannel(id: UInt32($0), name: "Channel \($0)", parentID: 0, position: $0, linkedChannelIDs: [])
+            }
+        )
+        let users = (1...1_000).map {
+            makeUser(id: UInt32($0), name: "User \($0)", channelID: UInt32($0 * 2))
+        }
+
+        let tree = MumbleChannelTreeNode.makeTree(from: channels, users: users)
+
+        #expect(tree.map(\.title) == ["Root"])
+        #expect(tree.first?.children?.count == 2_000)
+        #expect(tree.first?.containsUsersInSubtree == true)
+    }
+
+    @Test
     func linkedChannelClosureIncludesTransitiveLinks() {
         let channelsByID: [UInt32: MumbleChannel] = [
             10: MumbleChannel(id: 10, name: "A", parentID: nil, position: 0, linkedChannelIDs: [20]),
@@ -169,5 +255,61 @@ struct MumbleChannelListServiceTests {
         #expect(MumbleReconnectPolicy.delay(forAttempt: 4) == 8)
         #expect(MumbleReconnectPolicy.delay(forAttempt: 5) == 15)
         #expect(MumbleReconnectPolicy.delay(forAttempt: 6) == 15)
+    }
+
+    private func makeUser(id: UInt32, name: String, channelID: UInt32) -> MumbleUser {
+        MumbleUser(
+            id: id,
+            name: name,
+            channelID: channelID,
+            listeningChannelIDs: [],
+            registeredUserID: nil,
+            isServerMuted: false,
+            isServerDeafened: false,
+            isSuppressed: false,
+            isSelfMuted: false,
+            isSelfDeafened: false
+        )
+    }
+
+    private func decodeTopLevelFields(from payload: Data) -> (varints: [UInt64: [UInt64]], bytes: [UInt64: [Data]]) {
+        let slice = payload[...]
+        var index = slice.startIndex
+        var varints: [UInt64: [UInt64]] = [:]
+        var bytes: [UInt64: [Data]] = [:]
+
+        while index < slice.endIndex {
+            guard let key = MumbleProtobufWire.decodeVarint(from: slice, index: &index) else {
+                Issue.record("Failed to decode field key")
+                break
+            }
+
+            let fieldNumber = key >> 3
+            let wireType = key & 0x07
+
+            switch wireType {
+            case 0:
+                guard let value = MumbleProtobufWire.decodeVarint(from: slice, index: &index) else {
+                    Issue.record("Failed to decode varint field \(fieldNumber)")
+                    return (varints, bytes)
+                }
+
+                varints[fieldNumber, default: []].append(value)
+            case 2:
+                guard let value = MumbleProtobufWire.decodeLengthDelimited(from: slice, index: &index) else {
+                    Issue.record("Failed to decode bytes field \(fieldNumber)")
+                    return (varints, bytes)
+                }
+
+                bytes[fieldNumber, default: []].append(value)
+            default:
+                guard MumbleProtobufWire.skipField(wireType: wireType, payload: slice, index: &index) else {
+                    Issue.record("Failed to skip unsupported field \(fieldNumber)")
+                    return (varints, bytes)
+                }
+            }
+        }
+
+        return (varints, bytes)
     }
 }

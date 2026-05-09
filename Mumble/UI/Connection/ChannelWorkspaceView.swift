@@ -11,6 +11,7 @@ struct ChannelWorkspaceView: View {
     let isLoadingChannels: Bool
     let onJoinChannel: (MumbleChannel) -> Void
     let onMoveUser: (UInt32, MumbleChannel) -> Void
+    @State private var treeState = ChannelWorkspaceTreeState.empty
 
     var body: some View {
         Group {
@@ -21,10 +22,11 @@ struct ChannelWorkspaceView: View {
                 )
             } else {
                 ChannelTreeView(
-                    nodes: MumbleChannelTreeNode.makeTree(from: channels, users: users),
-                    channelsByID: Dictionary(uniqueKeysWithValues: channels.map { ($0.id, $0) }),
+                    nodes: treeState.nodes,
+                    channelsByID: treeState.channelsByID,
+                    occupancyByChannelID: treeState.occupancyByChannelID,
                     talkStatesBySessionID: talkStatesBySessionID,
-                    linkedChannelIDsForCurrentSession: linkedChannelIDsForCurrentSession,
+                    linkedChannelIDsForCurrentSession: treeState.linkedChannelIDsForCurrentSession,
                     currentSessionID: currentSessionID,
                     currentSessionChannelID: currentSessionChannelID,
                     onJoinChannel: onJoinChannel,
@@ -33,14 +35,48 @@ struct ChannelWorkspaceView: View {
             }
         }
         .background(Color(nsColor: .textBackgroundColor))
+        .onAppear {
+            rebuildTreeNodes()
+        }
+        .onChange(of: channels) {
+            rebuildTreeNodes()
+        }
+        .onChange(of: users) {
+            rebuildTreeNodes()
+        }
+        .onChange(of: currentSessionChannelID) {
+            rebuildTreeNodes()
+        }
     }
 
-    private var linkedChannelIDsForCurrentSession: Set<UInt32> {
+    private func rebuildTreeNodes() {
         let channelsByID = Dictionary(uniqueKeysWithValues: channels.map { ($0.id, $0) })
-        return channelsByID
+        let linkedChannelIDsForCurrentSession = channelsByID
             .linkedClosure(startingAt: currentSessionChannelID)
             .subtracting(currentSessionChannelID.map { [$0] } ?? [])
+        let nodes = MumbleChannelTreeNode.makeTree(from: channels, users: users)
+
+        treeState = ChannelWorkspaceTreeState(
+            nodes: nodes,
+            channelsByID: channelsByID,
+            occupancyByChannelID: Dictionary(uniqueKeysWithValues: nodes.flatMap(\.channelOccupancyStates)),
+            linkedChannelIDsForCurrentSession: linkedChannelIDsForCurrentSession
+        )
     }
+}
+
+private struct ChannelWorkspaceTreeState: Equatable {
+    static let empty = ChannelWorkspaceTreeState(
+        nodes: [],
+        channelsByID: [:],
+        occupancyByChannelID: [:],
+        linkedChannelIDsForCurrentSession: []
+    )
+
+    let nodes: [MumbleChannelTreeNode]
+    let channelsByID: [UInt32: MumbleChannel]
+    let occupancyByChannelID: [UInt32: Bool]
+    let linkedChannelIDsForCurrentSession: Set<UInt32>
 }
 
 private enum DraggedMumbleUserPayload {
@@ -107,6 +143,7 @@ private enum DraggedMumbleUserPayload {
 private struct ChannelTreeView: View {
     let nodes: [MumbleChannelTreeNode]
     let channelsByID: [UInt32: MumbleChannel]
+    let occupancyByChannelID: [UInt32: Bool]
     let talkStatesBySessionID: [UInt32: MumbleUserTalkState]
     let linkedChannelIDsForCurrentSession: Set<UInt32>
     let currentSessionID: UInt32?
@@ -117,37 +154,61 @@ private struct ChannelTreeView: View {
     @State private var expansionOverrides: [UInt32: Bool] = [:]
     @State private var previousOccupancyByChannelID: [UInt32: Bool] = [:]
 
-    private var occupancyByChannelID: [UInt32: Bool] {
-        Dictionary(uniqueKeysWithValues: nodes.flatMap(\.channelOccupancyStates))
-    }
+    @State private var visibleRows: [ChannelTreeVisibleRow] = []
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(nodes) { node in
-                    ChannelTreeBranch(
-                        node: node,
-                        depth: 0,
-                        channelsByID: channelsByID,
-                        talkStatesBySessionID: talkStatesBySessionID,
-                        linkedChannelIDsForCurrentSession: linkedChannelIDsForCurrentSession,
-                        currentSessionID: currentSessionID,
-                        currentSessionChannelID: currentSessionChannelID,
-                        expansionOverrides: $expansionOverrides,
-                        occupancyByChannelID: occupancyByChannelID,
-                        onJoinChannel: onJoinChannel,
-                        onMoveUser: onMoveUser
-                    )
+        List {
+            ForEach(visibleRows) { row in
+                ChannelTreeRow(
+                    row: row,
+                    channelsByID: channelsByID,
+                    talkStatesBySessionID: talkStatesBySessionID,
+                    linkedChannelIDsForCurrentSession: linkedChannelIDsForCurrentSession,
+                    onToggleExpansion: row.isExpanded.map { isExpanded in
+                        {
+                            if let channelID = row.channelID {
+                                setExpanded(!isExpanded, for: channelID)
+                            }
+                        }
+                    },
+                    currentSessionChannelID: currentSessionChannelID,
+                    onJoinChannel: onJoinChannel,
+                    onMoveUser: onMoveUser
+                )
+                .environment(\.mumbleCurrentSessionID, currentSessionID)
+                .listRowInsets(EdgeInsets())
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color(nsColor: .textBackgroundColor))
+                .transaction { transaction in
+                    transaction.animation = nil
                 }
             }
-            .padding(.vertical, 6)
         }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
         .background(Color(nsColor: .textBackgroundColor))
         .onAppear {
             synchronizeExpansionState()
+            rebuildVisibleRows()
+        }
+        .onChange(of: nodes) {
+            rebuildVisibleRows()
+        }
+        .onChange(of: expansionOverrides) {
+            rebuildVisibleRows()
         }
         .onChange(of: occupancyByChannelID) {
             synchronizeExpansionState()
+            rebuildVisibleRows()
+        }
+    }
+
+    private func setExpanded(_ isExpanded: Bool, for channelID: UInt32) {
+        var transaction = Transaction()
+        transaction.animation = nil
+
+        withTransaction(transaction) {
+            expansionOverrides[channelID] = isExpanded
         }
     }
 
@@ -164,91 +225,23 @@ private struct ChannelTreeView: View {
 
         previousOccupancyByChannelID = occupancyByChannelID
     }
-}
 
-private struct ChannelTreeBranch: View {
-    let node: MumbleChannelTreeNode
-    let depth: Int
-    let channelsByID: [UInt32: MumbleChannel]
-    let talkStatesBySessionID: [UInt32: MumbleUserTalkState]
-    let linkedChannelIDsForCurrentSession: Set<UInt32>
-    let currentSessionID: UInt32?
-    let currentSessionChannelID: UInt32?
-    @Binding var expansionOverrides: [UInt32: Bool]
-    let occupancyByChannelID: [UInt32: Bool]
-    let onJoinChannel: (MumbleChannel) -> Void
-    let onMoveUser: (UInt32, MumbleChannel) -> Void
-
-    var body: some View {
-        switch node.kind {
-        case .user:
-                ChannelTreeRow(
-                    node: node,
-                    depth: depth,
-                    channelsByID: channelsByID,
-                    talkStatesBySessionID: talkStatesBySessionID,
-                    linkedChannelIDsForCurrentSession: linkedChannelIDsForCurrentSession,
-                    isExpanded: nil,
-                onToggleExpansion: nil,
-                currentSessionChannelID: currentSessionChannelID,
-                onJoinChannel: onJoinChannel,
-                onMoveUser: onMoveUser
-            )
-            .environment(\.mumbleCurrentSessionID, currentSessionID)
-        case .channel:
-            if let channelID = node.channelID {
-                let children = node.children ?? []
-                let isExpanded = expansionOverrides[channelID] ?? occupancyByChannelID[channelID] ?? false
-
-                VStack(alignment: .leading, spacing: 0) {
-                    ChannelTreeRow(
-                        node: node,
-                        depth: depth,
-                        channelsByID: channelsByID,
-                        talkStatesBySessionID: talkStatesBySessionID,
-                        linkedChannelIDsForCurrentSession: linkedChannelIDsForCurrentSession,
-                        isExpanded: children.isEmpty ? nil : isExpanded,
-                        onToggleExpansion: children.isEmpty ? nil : {
-                            expansionOverrides[channelID] = !isExpanded
-                        },
-                        currentSessionChannelID: currentSessionChannelID,
-                        onJoinChannel: onJoinChannel,
-                        onMoveUser: onMoveUser
-                    )
-                    .environment(\.mumbleCurrentSessionID, currentSessionID)
-
-                    if isExpanded {
-                        ForEach(children) { child in
-                            ChannelTreeBranch(
-                                node: child,
-                                depth: depth + 1,
-                                channelsByID: channelsByID,
-                                talkStatesBySessionID: talkStatesBySessionID,
-                                linkedChannelIDsForCurrentSession: linkedChannelIDsForCurrentSession,
-                                currentSessionID: currentSessionID,
-                                currentSessionChannelID: currentSessionChannelID,
-                                expansionOverrides: $expansionOverrides,
-                                occupancyByChannelID: occupancyByChannelID,
-                                onJoinChannel: onJoinChannel,
-                                onMoveUser: onMoveUser
-                            )
-                        }
-                    }
-                }
-            }
-        }
+    private func rebuildVisibleRows() {
+        visibleRows = ChannelTreeVisibleRow.makeVisibleRows(
+            from: nodes,
+            expansionOverrides: expansionOverrides,
+            occupancyByChannelID: occupancyByChannelID
+        )
     }
 }
 
 private struct ChannelTreeRow: View {
     @Environment(\.mumbleCurrentSessionID) private var currentSessionID
 
-    let node: MumbleChannelTreeNode
-    let depth: Int
+    let row: ChannelTreeVisibleRow
     let channelsByID: [UInt32: MumbleChannel]
     let talkStatesBySessionID: [UInt32: MumbleUserTalkState]
     let linkedChannelIDsForCurrentSession: Set<UInt32>
-    let isExpanded: Bool?
     let onToggleExpansion: (() -> Void)?
     let currentSessionChannelID: UInt32?
     let onJoinChannel: (MumbleChannel) -> Void
@@ -256,7 +249,7 @@ private struct ChannelTreeRow: View {
     @State private var isDropTargeted = false
 
     private var canJoinChannel: Bool {
-        guard let channel = node.channel else {
+        guard let channel = row.channel else {
             return false
         }
 
@@ -265,29 +258,36 @@ private struct ChannelTreeRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            switch node.kind {
+            switch row.kind {
             case .channel:
                 disclosureIndicator
 
                 HStack(spacing: 6) {
-                    Text(node.title)
+                    Text(row.title)
                         .font(.body)
                         .lineLimit(1)
 
-                    if let channel = node.channel, linkedChannelIDsForCurrentSession.contains(channel.id) {
+                    if let channel = row.channel, linkedChannelIDsForCurrentSession.contains(channel.id) {
                         Image(systemName: "link")
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(Color(red: 0.43, green: 0.78, blue: 1.0))
                             .help(channelLinkHelpText(for: channel))
                     }
                 }
+                .onTapGesture(count: 2) {
+                    guard let channel = row.channel, canJoinChannel else {
+                        return
+                    }
+
+                    onJoinChannel(channel)
+                }
             case .user:
                 indentationSpacer
 
-                if let user = node.user {
+                if let user = row.user {
                     UserTreeRow(
                         user: user,
-                        userDisplayRole: node.userDisplayRole ?? .member,
+                        userDisplayRole: row.userDisplayRole ?? .member,
                         talkState: talkStatesBySessionID[user.id] ?? .passive,
                         isCurrentSession: user.id == currentSessionID
                     )
@@ -296,7 +296,7 @@ private struct ChannelTreeRow: View {
 
             Spacer(minLength: 0)
         }
-        .padding(.leading, CGFloat(depth) * 16 + 8)
+        .padding(.leading, CGFloat(row.depth) * 16 + 8)
         .padding(.trailing, 8)
         .padding(.vertical, 2)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -306,7 +306,7 @@ private struct ChannelTreeRow: View {
                 .fill(isDropTargeted ? Color.accentColor.opacity(0.18) : .clear)
         )
         .contextMenu {
-            if let channel = node.channel {
+            if let channel = row.channel {
                 Button("Join Channel") {
                     onJoinChannel(channel)
                 }
@@ -319,18 +319,11 @@ private struct ChannelTreeRow: View {
             isDropTargeted: $isDropTargeted,
             onMoveUser: onMoveUser
         ))
-        .onTapGesture(count: 2) {
-            guard let channel = node.channel, canJoinChannel else {
-                return
-            }
-
-            onJoinChannel(channel)
-        }
     }
 
     @ViewBuilder
     private var disclosureIndicator: some View {
-        if let isExpanded, let onToggleExpansion {
+        if let isExpanded = row.isExpanded, let onToggleExpansion {
             Button(action: onToggleExpansion) {
                 Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                     .font(.system(size: 11, weight: .semibold))
@@ -338,6 +331,8 @@ private struct ChannelTreeRow: View {
                     .frame(width: 12, height: 12)
             }
             .buttonStyle(.plain)
+            .frame(width: 20, height: 18)
+            .contentShape(Rectangle())
         } else {
             indentationSpacer
         }
@@ -349,11 +344,11 @@ private struct ChannelTreeRow: View {
     }
 
     private var dropTargetChannel: MumbleChannel? {
-        if let channel = node.channel {
+        if let channel = row.channel {
             return channel
         }
 
-        guard let user = node.user, let channelID = user.channelID else {
+        guard row.user != nil, let channelID = row.channelID else {
             return nil
         }
 
@@ -361,11 +356,11 @@ private struct ChannelTreeRow: View {
     }
 
     private var dropAcceptance: ChannelDropAcceptance? {
-        if node.channel != nil {
+        if row.channel != nil {
             return .anySession
         }
 
-        guard node.user != nil, let currentSessionID else {
+        guard row.user != nil, let currentSessionID else {
             return nil
         }
 
@@ -542,6 +537,84 @@ private struct ChannelWorkspaceEmptyState: View {
     }
 }
 
+struct ChannelTreeVisibleRow: Identifiable, Hashable {
+    let id: MumbleChannelTreeNode.RowID
+    let kind: MumbleChannelTreeNode.Kind
+    let title: String
+    let channel: MumbleChannel?
+    let user: MumbleUser?
+    let userDisplayRole: MumbleChannelTreeNode.UserDisplayRole?
+    let channelID: UInt32?
+    let depth: Int
+    let isExpanded: Bool?
+
+    static func makeVisibleRows(
+        from nodes: [MumbleChannelTreeNode],
+        expansionOverrides: [UInt32: Bool],
+        occupancyByChannelID: [UInt32: Bool]
+    ) -> [ChannelTreeVisibleRow] {
+        var rows: [ChannelTreeVisibleRow] = []
+        rows.reserveCapacity(nodes.count)
+
+        for node in nodes {
+            appendVisibleRows(
+                from: node,
+                depth: 0,
+                expansionOverrides: expansionOverrides,
+                occupancyByChannelID: occupancyByChannelID,
+                rows: &rows
+            )
+        }
+
+        return rows
+    }
+
+    private static func appendVisibleRows(
+        from node: MumbleChannelTreeNode,
+        depth: Int,
+        expansionOverrides: [UInt32: Bool],
+        occupancyByChannelID: [UInt32: Bool],
+        rows: inout [ChannelTreeVisibleRow]
+    ) {
+        let children = node.children ?? []
+        let isExpanded: Bool? = {
+            guard node.kind == .channel, let channelID = node.channelID, children.isEmpty == false else {
+                return nil
+            }
+
+            return expansionOverrides[channelID] ?? occupancyByChannelID[channelID] ?? false
+        }()
+
+        rows.append(
+            ChannelTreeVisibleRow(
+                id: node.id,
+                kind: node.kind,
+                title: node.title,
+                channel: node.channel,
+                user: node.user,
+                userDisplayRole: node.userDisplayRole,
+                channelID: node.channelID,
+                depth: depth,
+                isExpanded: isExpanded
+            )
+        )
+
+        guard isExpanded == true else {
+            return
+        }
+
+        for child in children {
+            appendVisibleRows(
+                from: child,
+                depth: depth + 1,
+                expansionOverrides: expansionOverrides,
+                occupancyByChannelID: occupancyByChannelID,
+                rows: &rows
+            )
+        }
+    }
+}
+
 struct MumbleChannelTreeNode: Identifiable, Hashable {
     enum RowID: Hashable {
         case channel(UInt32)
@@ -580,6 +653,18 @@ struct MumbleChannelTreeNode: Identifiable, Hashable {
 
     static func makeTree(from channels: [MumbleChannel], users: [MumbleUser]) -> [MumbleChannelTreeNode] {
         let channelsByID = Dictionary(uniqueKeysWithValues: channels.map { ($0.id, $0) })
+        let childrenByParentID = Dictionary(grouping: channels.compactMap { channel -> (UInt32, MumbleChannel)? in
+            guard let parentID = channel.parentID, channelsByID[parentID] != nil else {
+                return nil
+            }
+
+            return (parentID, channel)
+        }, by: \.0)
+        .mapValues { childChannels in
+            childChannels
+                .map(\.1)
+                .sorted(by: sortComparator)
+        }
         let usersByChannelID = Dictionary(grouping: users.flatMap { user -> [(UInt32, ChannelUserPlacement)] in
             var placements: [(UInt32, ChannelUserPlacement)] = []
 
@@ -599,7 +684,6 @@ struct MumbleChannelTreeNode: Identifiable, Hashable {
                 .sorted(by: userPlacementSortComparator)
         }
         let sortedChannels = channels.sorted(by: sortComparator)
-
         let rootChannels = sortedChannels.filter { channel in
             guard let parentID = channel.parentID else {
                 return true
@@ -609,19 +693,27 @@ struct MumbleChannelTreeNode: Identifiable, Hashable {
         }
 
         return rootChannels.map {
-            makeNode(from: $0, channels: sortedChannels, usersByChannelID: usersByChannelID)
+            makeNode(
+                from: $0,
+                childrenByParentID: childrenByParentID,
+                usersByChannelID: usersByChannelID
+            )
         }
     }
 
     private static func makeNode(
         from channel: MumbleChannel,
-        channels: [MumbleChannel],
+        childrenByParentID: [UInt32: [MumbleChannel]],
         usersByChannelID: [UInt32: [ChannelUserPlacement]]
     ) -> MumbleChannelTreeNode {
-        let childChannels = channels
-            .filter { $0.parentID == channel.id }
-            .sorted(by: sortComparator)
-            .map { makeNode(from: $0, channels: channels, usersByChannelID: usersByChannelID) }
+        let childChannels = (childrenByParentID[channel.id] ?? [])
+            .map {
+                makeNode(
+                    from: $0,
+                    childrenByParentID: childrenByParentID,
+                    usersByChannelID: usersByChannelID
+                )
+            }
         let childUsers = (usersByChannelID[channel.id] ?? []).map { placement in
             MumbleChannelTreeNode(
                 id: .user(sessionID: placement.user.id, channelID: channel.id, role: placement.role),
@@ -630,7 +722,7 @@ struct MumbleChannelTreeNode: Identifiable, Hashable {
                 channel: nil,
                 user: placement.user,
                 userDisplayRole: placement.role,
-                channelID: nil,
+                channelID: channel.id,
                 containsUsersInSubtree: true,
                 children: nil
             )

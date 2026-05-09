@@ -293,6 +293,8 @@ enum MumbleSessionPayloads {
     private static let currentMajor: UInt64 = UInt64(MumbleProtocolVersion.currentMajor)
     private static let currentMinor: UInt64 = UInt64(MumbleProtocolVersion.currentMinor)
     private static let currentPatch: UInt64 = 0
+    static let linkedChannelVoiceTargetID: UInt32 = 1
+    static let localChannelVoiceTargetID: UInt32 = 2
 
     static func versionPacket() -> Data {
         let versionV1 = (currentMajor << 16) | (currentMinor << 8) | currentPatch
@@ -336,6 +338,43 @@ enum MumbleSessionPayloads {
         var payload = Data()
         MumbleProtobufWire.appendBytesField(2, value: clientNonce, to: &payload)
         return payload
+    }
+
+    static func channelVoiceTargetPacket(
+        targetID: UInt32,
+        channelID: UInt32?,
+        includeLinkedChannels: Bool
+    ) -> Data {
+        var payload = Data()
+        MumbleProtobufWire.appendVarintField(1, value: UInt64(targetID), to: &payload)
+
+        guard let channelID else {
+            return payload
+        }
+
+        var targetPayload = Data()
+        MumbleProtobufWire.appendVarintField(2, value: UInt64(channelID), to: &targetPayload)
+        if includeLinkedChannels {
+            MumbleProtobufWire.appendBoolField(4, value: true, to: &targetPayload)
+        }
+        MumbleProtobufWire.appendBytesField(2, value: targetPayload, to: &payload)
+        return payload
+    }
+
+    static func linkedChannelVoiceTargetPacket(channelID: UInt32?) -> Data {
+        channelVoiceTargetPacket(
+            targetID: linkedChannelVoiceTargetID,
+            channelID: channelID,
+            includeLinkedChannels: true
+        )
+    }
+
+    static func localChannelVoiceTargetPacket(channelID: UInt32?) -> Data {
+        channelVoiceTargetPacket(
+            targetID: localChannelVoiceTargetID,
+            channelID: channelID,
+            includeLinkedChannels: false
+        )
     }
 }
 
@@ -798,6 +837,8 @@ enum MumbleSessionMessageDecoder {
 }
 
 private final class MumbleChannelListClient {
+    private static let snapshotFlushDelay: TimeInterval = 0.05
+
     private struct CertificateMetadata {
         let commonName: String
         let subjectSummary: String
@@ -841,6 +882,10 @@ private final class MumbleChannelListClient {
     private var talkStateResetWorkItems: [UInt32: DispatchWorkItem] = [:]
     private var isPushToTalkActive = false
     private var activePushToTalkMode: MumblePushToTalkMode?
+    private var configuredVoiceTargetChannelID: UInt32?
+    private var snapshotFlushWorkItem: DispatchWorkItem?
+    private var needsChannelSnapshot = false
+    private var needsUserSnapshot = false
     private let inputVolume: Double
     private let isMicrophoneMuted: Bool
     private lazy var audioCapture = MumbleAudioCaptureController(logger: logger) { [weak self] frame in
@@ -892,6 +937,7 @@ private final class MumbleChannelListClient {
             stopPingLoop()
             stopUDPPingLoop()
             stopReconnectLoop()
+            cancelPendingSnapshotFlush()
             teardownCurrentConnection()
             audioCapture.stop()
             Task { await self.audioPlayback.stop() }
@@ -1063,6 +1109,10 @@ private final class MumbleChannelListClient {
         currentSessionID = nil
         hasSynchronized = false
         cryptState = MumbleCryptState()
+        configuredVoiceTargetChannelID = nil
+        cancelPendingSnapshotFlush()
+        needsChannelSnapshot = false
+        needsUserSnapshot = false
         receivedUDPDatagramCount = 0
         decryptedUDPDatagramCount = 0
         receivedVoicePacketCount = 0
@@ -1513,7 +1563,8 @@ private final class MumbleChannelListClient {
             reconnectAttempt = 0
             hasSynchronized = true
             currentSessionID = serverSync.currentSessionID
-            updateAudioSessionState()
+            refreshVoiceTargets()
+            flushSnapshotUpdates(updateAudioSession: true)
             emit(.synchronized(welcomeText: serverSync.welcomeText, currentSessionID: serverSync.currentSessionID))
         case .udpTunnel:
             handleVoiceTransportPacket(payload, source: "TCP tunnel")
@@ -1553,7 +1604,6 @@ private final class MumbleChannelListClient {
             users.removeValue(forKey: userRemove.sessionID)
             emit(.talkStateChanged(sessionID: userRemove.sessionID, talkState: .passive))
             emitUserSnapshot()
-            updateAudioSessionState()
         default:
             break
         }
@@ -1730,12 +1780,44 @@ private final class MumbleChannelListClient {
         }
 
         users[message.sessionID] = user
+        if message.sessionID == currentSessionID {
+            refreshVoiceTargets()
+        }
         emitUserSnapshot()
-        updateAudioSessionState()
+    }
+
+    private func refreshVoiceTargets() {
+        guard hasFinished == false, currentSessionID != nil else {
+            return
+        }
+
+        let channelID = currentSessionID.flatMap { users[$0]?.channelID }
+        guard configuredVoiceTargetChannelID != channelID else {
+            return
+        }
+
+        configuredVoiceTargetChannelID = channelID
+        sendMessage(
+            type: .voiceTarget,
+            payload: MumbleSessionPayloads.linkedChannelVoiceTargetPacket(channelID: channelID)
+        )
+        sendMessage(
+            type: .voiceTarget,
+            payload: MumbleSessionPayloads.localChannelVoiceTargetPacket(channelID: channelID)
+        )
     }
 
     private func updateTalkState(from packet: MumbleVoicePacket) {
         guard users[packet.senderSession] != nil else {
+            return
+        }
+
+        if
+            packet.senderSession == currentSessionID,
+            isPushToTalkActive,
+            let activePushToTalkMode
+        {
+            emit(.talkStateChanged(sessionID: packet.senderSession, talkState: activePushToTalkMode.talkState))
             return
         }
 
@@ -1787,52 +1869,82 @@ private final class MumbleChannelListClient {
     }
 
     private func removeChannelTree(withID channelID: UInt32) {
-        channels.removeValue(forKey: channelID)
+        let childrenByParentID = Dictionary(grouping: channels.values.compactMap { channel -> (UInt32, UInt32)? in
+            guard let parentID = channel.parentID else {
+                return nil
+            }
 
-        let childIDs = channels.values
-            .filter { $0.parentID == channelID }
-            .map(\.id)
+            return (parentID, channel.id)
+        }, by: \.0)
+        .mapValues { $0.map(\.1) }
 
-        for childID in childIDs {
-            removeChannelTree(withID: childID)
+        var channelIDsToRemove = [channelID]
+        var index = 0
+        while index < channelIDsToRemove.count {
+            let currentID = channelIDsToRemove[index]
+            channelIDsToRemove.append(contentsOf: childrenByParentID[currentID] ?? [])
+            index += 1
+        }
+
+        for removedChannelID in channelIDsToRemove {
+            channels.removeValue(forKey: removedChannelID)
         }
     }
 
     private func emitChannelSnapshot() {
-        let snapshot = channels.values.sorted {
-            if $0.position == $1.position {
-                let comparison = $0.name.localizedStandardCompare($1.name)
-
-                if comparison == .orderedSame {
-                    return $0.id < $1.id
-                }
-
-                return comparison == .orderedAscending
-            }
-
-            return $0.position < $1.position
-        }
-
-        emit(.channelsUpdated(snapshot))
-        updateAudioSessionState()
+        scheduleSnapshotFlush(channelSnapshotChanged: true, userSnapshotChanged: false)
     }
 
     private func emitUserSnapshot() {
-        let snapshot = users.values.sorted {
-            let comparison = $0.name.localizedStandardCompare($1.name)
-
-            if comparison == .orderedSame {
-                return $0.id < $1.id
-            }
-
-            return comparison == .orderedAscending
-        }
-
-        emit(.usersUpdated(snapshot))
+        scheduleSnapshotFlush(channelSnapshotChanged: false, userSnapshotChanged: true)
     }
 
-    private func updateAudioSessionState() {
-        let userSnapshot = users.values.sorted {
+    private func scheduleSnapshotFlush(channelSnapshotChanged: Bool, userSnapshotChanged: Bool) {
+        needsChannelSnapshot = needsChannelSnapshot || channelSnapshotChanged
+        needsUserSnapshot = needsUserSnapshot || userSnapshotChanged
+
+        guard hasSynchronized else {
+            return
+        }
+
+        guard snapshotFlushWorkItem == nil else {
+            return
+        }
+
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.flushSnapshotUpdates(updateAudioSession: true)
+        }
+        snapshotFlushWorkItem = workItem
+        queue.asyncAfter(deadline: .now() + Self.snapshotFlushDelay, execute: workItem)
+    }
+
+    private func flushSnapshotUpdates(updateAudioSession: Bool) {
+        snapshotFlushWorkItem?.cancel()
+        snapshotFlushWorkItem = nil
+
+        let shouldEmitChannelSnapshot = needsChannelSnapshot
+        let shouldEmitUserSnapshot = needsUserSnapshot
+        needsChannelSnapshot = false
+        needsUserSnapshot = false
+
+        let channelSnapshot = shouldEmitChannelSnapshot || updateAudioSession ? sortedChannelSnapshot() : []
+        let userSnapshot = shouldEmitUserSnapshot || updateAudioSession ? sortedUserSnapshot() : []
+
+        if shouldEmitChannelSnapshot {
+            emit(.channelsUpdated(channelSnapshot))
+        }
+
+        if shouldEmitUserSnapshot {
+            emit(.usersUpdated(userSnapshot))
+        }
+
+        if updateAudioSession {
+            updateAudioSessionState(channels: channelSnapshot, users: userSnapshot)
+        }
+    }
+
+    private func sortedUserSnapshot() -> [MumbleUser] {
+        users.values.sorted {
             let comparison = $0.name.localizedStandardCompare($1.name)
 
             if comparison == .orderedSame {
@@ -1841,7 +1953,10 @@ private final class MumbleChannelListClient {
 
             return comparison == .orderedAscending
         }
-        let channelSnapshot = channels.values.sorted {
+    }
+
+    private func sortedChannelSnapshot() -> [MumbleChannel] {
+        channels.values.sorted {
             if $0.position == $1.position {
                 let comparison = $0.name.localizedStandardCompare($1.name)
 
@@ -1854,7 +1969,9 @@ private final class MumbleChannelListClient {
 
             return $0.position < $1.position
         }
+    }
 
+    private func updateAudioSessionState(channels channelSnapshot: [MumbleChannel], users userSnapshot: [MumbleUser]) {
         let currentSessionID = currentSessionID
         Task {
             await self.audioPlayback.updateSession(
@@ -1863,6 +1980,18 @@ private final class MumbleChannelListClient {
                 currentSessionID: currentSessionID
             )
         }
+    }
+
+    private func updateAudioSessionState() {
+        updateAudioSessionState(
+            channels: sortedChannelSnapshot(),
+            users: sortedUserSnapshot()
+        )
+    }
+
+    private func cancelPendingSnapshotFlush() {
+        snapshotFlushWorkItem?.cancel()
+        snapshotFlushWorkItem = nil
     }
 
     private func shouldLogVoiceTransportEvent(number: Int) -> Bool {
@@ -1880,6 +2009,7 @@ private final class MumbleChannelListClient {
         stopPingLoop()
         stopUDPPingLoop()
         stopReconnectLoop()
+        cancelPendingSnapshotFlush()
         emit(event)
         teardownCurrentConnection()
         audioCapture.stop()
@@ -1895,6 +2025,7 @@ private final class MumbleChannelListClient {
         stopUDPPingLoop()
         pendingCertificateTrustChallenge = nil
         stopTransmittingInternal()
+        cancelPendingSnapshotFlush()
         audioCapture.stop()
         teardownCurrentConnection()
         scheduleReconnect(after: reason)
@@ -1920,6 +2051,7 @@ private final class MumbleChannelListClient {
         users = [:]
         currentSessionID = nil
         isPushToTalkActive = false
+        needsUserSnapshot = false
         emit(.usersUpdated([]))
         emit(
             .reconnecting(

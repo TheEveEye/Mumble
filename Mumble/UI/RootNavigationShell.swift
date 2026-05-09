@@ -585,14 +585,19 @@ struct RootNavigationShell: View {
 
 
     private func startPushToTalk(mode: MumblePushToTalkMode) {
-        guard connectedServerID != nil, currentSessionID != nil else {
+        guard connectedServerID != nil, let currentSessionID else {
             return
         }
 
+        talkStatesBySessionID[currentSessionID] = mode.talkState
         channelConnectionHandle?.startTransmitting(mode: mode)
     }
 
     private func stopPushToTalk() {
+        if let currentSessionID {
+            talkStatesBySessionID.removeValue(forKey: currentSessionID)
+        }
+
         channelConnectionHandle?.stopTransmitting()
     }
 
