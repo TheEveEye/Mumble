@@ -51,6 +51,30 @@ struct RootNavigationShell: View {
         return userSnapshot.first(where: { $0.id == currentSessionID })
     }
 
+    private var canUpdateSelfMuteDeafState: Bool {
+        connectedServerID != nil && channelConnectionHandle != nil && currentSessionUser != nil
+    }
+
+    private var isCurrentSessionEffectivelyMuted: Bool {
+        currentSessionUser?.isSelfMuted == true || currentSessionUser?.isSelfDeafened == true
+    }
+
+    private var selfMuteToolbarImageName: String {
+        isCurrentSessionEffectivelyMuted ? "mic.slash.fill" : "mic.fill"
+    }
+
+    private var selfMuteToolbarHelpText: String {
+        isCurrentSessionEffectivelyMuted ? "Unmute yourself" : "Mute yourself"
+    }
+
+    private var selfDeafenToolbarImageName: String {
+        currentSessionUser?.isSelfDeafened == true ? "speaker.slash.fill" : "headphones"
+    }
+
+    private var selfDeafenToolbarHelpText: String {
+        currentSessionUser?.isSelfDeafened == true ? "Undeafen yourself" : "Deafen yourself"
+    }
+
     private var hotkeyConfiguration: String {
         let preferences = audioPreferences.first
         let localKey = AudioPreferences.normalizeHotkey(preferences?.localPushToTalkKey ?? "#")
@@ -143,15 +167,21 @@ struct RootNavigationShell: View {
                 }
                 .disabled(true)
 
-                Button {} label: {
-                    Image(systemName: "mic.fill")
+                Button {
+                    toggleSelfMute()
+                } label: {
+                    Image(systemName: selfMuteToolbarImageName)
                 }
-                .disabled(true)
+                .disabled(!canUpdateSelfMuteDeafState)
+                .help(selfMuteToolbarHelpText)
 
-                Button {} label: {
-                    Image(systemName: "headphones")
+                Button {
+                    toggleSelfDeafen()
+                } label: {
+                    Image(systemName: selfDeafenToolbarImageName)
                 }
-                .disabled(true)
+                .disabled(!canUpdateSelfMuteDeafState)
+                .help(selfDeafenToolbarHelpText)
 
                 Button {} label: {
                     Image(systemName: "message")
@@ -384,6 +414,33 @@ struct RootNavigationShell: View {
         let action = sessionID == currentSessionID ? "Joining channel" : "Moving user to"
         appendLog("\(action) \(channel.name).")
         channelConnectionHandle?.joinChannel(sessionID: sessionID, channelID: channel.id)
+    }
+
+    private func toggleSelfMute() {
+        guard let currentSessionUser else {
+            return
+        }
+
+        let isEffectivelyMuted = currentSessionUser.isSelfMuted || currentSessionUser.isSelfDeafened
+        let nextIsSelfMuted = !isEffectivelyMuted
+        let nextIsSelfDeafened = isEffectivelyMuted ? false : currentSessionUser.isSelfDeafened
+        channelConnectionHandle?.setSelfMuteDeafState(
+            isSelfMuted: nextIsSelfMuted,
+            isSelfDeafened: nextIsSelfDeafened
+        )
+    }
+
+    private func toggleSelfDeafen() {
+        guard let currentSessionUser else {
+            return
+        }
+
+        let nextIsSelfDeafened = !currentSessionUser.isSelfDeafened
+        let nextIsSelfMuted = nextIsSelfDeafened ? true : currentSessionUser.isSelfMuted
+        channelConnectionHandle?.setSelfMuteDeafState(
+            isSelfMuted: nextIsSelfMuted,
+            isSelfDeafened: nextIsSelfDeafened
+        )
     }
 
     private func resolvedPassword(for server: SavedServer, override: String?) -> String? {

@@ -186,6 +186,7 @@ private struct ChannelTreeView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        .environment(\.defaultMinListRowHeight, 20)
         .background(Color(nsColor: .textBackgroundColor))
         .onAppear {
             synchronizeExpansionState()
@@ -325,14 +326,19 @@ private struct ChannelTreeRow: View {
     private var disclosureIndicator: some View {
         if let isExpanded = row.isExpanded, let onToggleExpansion {
             Button(action: onToggleExpansion) {
-                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 12, height: 12)
+                ZStack {
+                    Rectangle()
+                        .fill(.clear)
+
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 12, height: 12)
+                }
+                .frame(width: 24, height: 12)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .frame(width: 20, height: 18)
-            .contentShape(Rectangle())
         } else {
             indentationSpacer
         }

@@ -9,16 +9,16 @@ enum MumblePushToTalkMode: String, CaseIterable, Sendable {
         case .localChannel:
             return MumbleSessionPayloads.localChannelVoiceTargetID
         case .linkedChannels:
-            return 0
+            return MumbleSessionPayloads.linkedChannelVoiceTargetID
         }
     }
 
     var talkState: MumbleUserTalkState {
         switch self {
         case .localChannel:
-            return .talking
+            return .whispering
         case .linkedChannels:
-            return .talking
+            return .shouting
         }
     }
 }

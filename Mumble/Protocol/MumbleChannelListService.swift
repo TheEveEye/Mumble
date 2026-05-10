@@ -135,6 +135,7 @@ final class MumbleChannelListConnectionHandle {
     private let userMove: (UInt32, UInt32) -> Void
     private let transmitStart: (MumblePushToTalkMode) -> Void
     private let transmitStop: () -> Void
+    private let selfMuteDeafStateUpdate: (Bool, Bool) -> Void
     private let trustDecision: (UUID, Bool, Bool) -> Void
 
     init(
@@ -142,12 +143,14 @@ final class MumbleChannelListConnectionHandle {
         userMove: @escaping (UInt32, UInt32) -> Void,
         transmitStart: @escaping (MumblePushToTalkMode) -> Void,
         transmitStop: @escaping () -> Void,
+        selfMuteDeafStateUpdate: @escaping (Bool, Bool) -> Void,
         trustDecision: @escaping (UUID, Bool, Bool) -> Void
     ) {
         self.cancellation = cancellation
         self.userMove = userMove
         self.transmitStart = transmitStart
         self.transmitStop = transmitStop
+        self.selfMuteDeafStateUpdate = selfMuteDeafStateUpdate
         self.trustDecision = trustDecision
     }
 
@@ -165,6 +168,10 @@ final class MumbleChannelListConnectionHandle {
 
     func stopTransmitting() {
         transmitStop()
+    }
+
+    func setSelfMuteDeafState(isSelfMuted: Bool, isSelfDeafened: Bool) {
+        selfMuteDeafStateUpdate(isSelfMuted, isSelfDeafened)
     }
 
     func resolveCertificateTrust(challengeID: UUID, accept: Bool, remember: Bool) {
@@ -216,6 +223,12 @@ struct MumbleChannelListService: Sendable {
             },
             transmitStop: {
                 client.stopTransmitting()
+            },
+            selfMuteDeafStateUpdate: { isSelfMuted, isSelfDeafened in
+                client.setSelfMuteDeafState(
+                    isSelfMuted: isSelfMuted,
+                    isSelfDeafened: isSelfDeafened
+                )
             },
             trustDecision: { challengeID, accept, remember in
                 client.resolveCertificateTrust(
@@ -331,6 +344,13 @@ enum MumbleSessionPayloads {
         var payload = Data()
         MumbleProtobufWire.appendVarintField(1, value: UInt64(sessionID), to: &payload)
         MumbleProtobufWire.appendVarintField(5, value: UInt64(channelID), to: &payload)
+        return payload
+    }
+
+    static func selfMuteDeafStatePacket(isSelfMuted: Bool, isSelfDeafened: Bool) -> Data {
+        var payload = Data()
+        MumbleProtobufWire.appendBoolField(9, value: isSelfMuted, to: &payload)
+        MumbleProtobufWire.appendBoolField(10, value: isSelfDeafened, to: &payload)
         return payload
     }
 
@@ -960,6 +980,27 @@ private final class MumbleChannelListClient {
                 payload: MumbleSessionPayloads.joinChannelPacket(
                     sessionID: sessionID,
                     channelID: channelID
+                )
+            )
+        }
+    }
+
+    func setSelfMuteDeafState(isSelfMuted: Bool, isSelfDeafened: Bool) {
+        queue.async { [weak self] in
+            guard let self, !hasFinished else {
+                return
+            }
+
+            guard currentSessionID != nil else {
+                logger.error("Ignoring self mute/deafen update before synchronization for \(target.endpointDescription)")
+                return
+            }
+
+            sendMessage(
+                type: .userState,
+                payload: MumbleSessionPayloads.selfMuteDeafStatePacket(
+                    isSelfMuted: isSelfMuted,
+                    isSelfDeafened: isSelfDeafened
                 )
             )
         }

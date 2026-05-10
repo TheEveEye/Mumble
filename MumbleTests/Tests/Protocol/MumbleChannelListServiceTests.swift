@@ -88,6 +88,48 @@ struct MumbleChannelListServiceTests {
     }
 
     @Test
+    func selfMuteDeafStatePacketEncodesMutedOnlyWithoutSessionID() {
+        let payload = MumbleSessionPayloads.selfMuteDeafStatePacket(
+            isSelfMuted: true,
+            isSelfDeafened: false
+        )
+
+        let fields = decodeTopLevelFields(from: payload)
+
+        #expect(fields.varints[1] == nil)
+        #expect(fields.varints[9] == [1])
+        #expect(fields.varints[10] == [0])
+    }
+
+    @Test
+    func selfMuteDeafStatePacketEncodesUnmutedAndUndeafenedWithoutSessionID() {
+        let payload = MumbleSessionPayloads.selfMuteDeafStatePacket(
+            isSelfMuted: false,
+            isSelfDeafened: false
+        )
+
+        let fields = decodeTopLevelFields(from: payload)
+
+        #expect(fields.varints[1] == nil)
+        #expect(fields.varints[9] == [0])
+        #expect(fields.varints[10] == [0])
+    }
+
+    @Test
+    func selfMuteDeafStatePacketEncodesMutedAndDeafenedWithoutSessionID() {
+        let payload = MumbleSessionPayloads.selfMuteDeafStatePacket(
+            isSelfMuted: true,
+            isSelfDeafened: true
+        )
+
+        let fields = decodeTopLevelFields(from: payload)
+
+        #expect(fields.varints[1] == nil)
+        #expect(fields.varints[9] == [1])
+        #expect(fields.varints[10] == [1])
+    }
+
+    @Test
     func cryptSetupPacketEncodesClientNonceForUdpHandshake() {
         let nonce = Data(repeating: 0xAB, count: 16)
 
