@@ -1,5 +1,4 @@
 import AppKit
-import ApplicationServices
 import SwiftUI
 import SwiftData
 
@@ -33,7 +32,6 @@ struct RootNavigationShell: View {
     @State private var activePushToTalkHotkey: MumbleHotkey?
     @State private var localPushToTalkHotkey: MumbleHotkey?
     @State private var shoutPushToTalkHotkey: MumbleHotkey?
-    @State private var hasPromptedForBackgroundInputAccess = false
 
     private var activeServer: SavedServer? {
         guard let connectedServerID else {
@@ -512,7 +510,6 @@ struct RootNavigationShell: View {
 
     private func installPushToTalkMonitor() {
         removePushToTalkMonitor()
-        ensureBackgroundInputAccessIfNeeded()
 
         let eventMask: NSEvent.EventTypeMask = [
             .keyDown,
@@ -607,24 +604,6 @@ struct RootNavigationShell: View {
             return consumeEvents ? nil : event
         default:
             return event
-        }
-    }
-
-    private func ensureBackgroundInputAccessIfNeeded() {
-        guard hasPromptedForBackgroundInputAccess == false else {
-            return
-        }
-
-        hasPromptedForBackgroundInputAccess = true
-
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        let isTrusted = AXIsProcessTrustedWithOptions(options)
-
-        if isTrusted == false {
-            dependencies.logger.info(
-                "Background push-to-talk needs Accessibility access. macOS should prompt for it in System Settings."
-            )
-            appendLog("Background push-to-talk requires Accessibility access. Allow Mumble in System Settings if keys do not register while the app is unfocused.")
         }
     }
 
