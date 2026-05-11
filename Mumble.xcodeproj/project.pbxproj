@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 77;
+	objectVersion = 100;
 	objects = {
 
 /* Begin PBXContainerItemProxy section */
@@ -50,24 +50,18 @@
 /* Begin PBXFrameworksBuildPhase section */
 		750749062F8D3E030064878A /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 		750749152F8D3E040064878A /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 		7507491F2F8D3E040064878A /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
 
@@ -105,14 +99,10 @@
 			);
 			buildRules = (
 			);
-			dependencies = (
-			);
 			fileSystemSynchronizedGroups = (
 				7507490B2F8D3E030064878A /* Mumble */,
 			);
 			name = Mumble;
-			packageProductDependencies = (
-			);
 			productName = Mumble;
 			productReference = 750749092F8D3E030064878A /* Mumble.app */;
 			productType = "com.apple.product-type.application";
@@ -134,8 +124,6 @@
 				7507491B2F8D3E040064878A /* MumbleTests */,
 			);
 			name = MumbleTests;
-			packageProductDependencies = (
-			);
 			productName = MumbleTests;
 			productReference = 750749182F8D3E040064878A /* MumbleTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
@@ -157,8 +145,6 @@
 				750749252F8D3E040064878A /* MumbleUITests */,
 			);
 			name = MumbleUITests;
-			packageProductDependencies = (
-			);
 			productName = MumbleUITests;
 			productReference = 750749222F8D3E040064878A /* MumbleUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
@@ -195,7 +181,7 @@
 			);
 			mainGroup = 750749002F8D3E030064878A;
 			minimizedProjectReferenceProxies = 1;
-			preferredProjectObjectVersion = 77;
+			preferredProjectObjectVersion = 100;
 			productRefGroup = 7507490A2F8D3E030064878A /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -210,48 +196,36 @@
 /* Begin PBXResourcesBuildPhase section */
 		750749072F8D3E030064878A /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 		750749162F8D3E040064878A /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 		750749202F8D3E040064878A /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		750749052F8D3E030064878A /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 		750749142F8D3E040064878A /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 		7507491E2F8D3E040064878A /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
 			files = (
 			);
-			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
 
@@ -269,7 +243,7 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
-		7507492A2F8D3E040064878A /* Debug */ = {
+		7507492A2F8D3E040064878A /* Debug configuration for PBXProject "Mumble" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -333,7 +307,7 @@
 			};
 			name = Debug;
 		};
-		7507492B2F8D3E040064878A /* Release */ = {
+		7507492B2F8D3E040064878A /* Release configuration for PBXProject "Mumble" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -389,7 +363,7 @@
 			};
 			name = Release;
 		};
-		7507492D2F8D3E040064878A /* Debug */ = {
+		7507492D2F8D3E040064878A /* Debug configuration for PBXNativeTarget "Mumble" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = MumbleIcon;
@@ -406,6 +380,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = Mumble;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Mumble uses the microphone for push-to-talk voice transmission.";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -426,7 +401,7 @@
 			};
 			name = Debug;
 		};
-		7507492E2F8D3E040064878A /* Release */ = {
+		7507492E2F8D3E040064878A /* Release configuration for PBXNativeTarget "Mumble" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = MumbleIcon;
@@ -443,6 +418,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = Mumble;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Mumble uses the microphone for push-to-talk voice transmission.";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -463,7 +439,7 @@
 			};
 			name = Release;
 		};
-		750749302F8D3E040064878A /* Debug */ = {
+		750749302F8D3E040064878A /* Debug configuration for PBXNativeTarget "MumbleTests" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
@@ -484,7 +460,7 @@
 			};
 			name = Debug;
 		};
-		750749312F8D3E040064878A /* Release */ = {
+		750749312F8D3E040064878A /* Release configuration for PBXNativeTarget "MumbleTests" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
@@ -505,7 +481,7 @@
 			};
 			name = Release;
 		};
-		750749332F8D3E040064878A /* Debug */ = {
+		750749332F8D3E040064878A /* Debug configuration for PBXNativeTarget "MumbleUITests" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
@@ -524,7 +500,7 @@
 			};
 			name = Debug;
 		};
-		750749342F8D3E040064878A /* Release */ = {
+		750749342F8D3E040064878A /* Release configuration for PBXNativeTarget "MumbleUITests" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
@@ -549,37 +525,33 @@
 		750749042F8D3E030064878A /* Build configuration list for PBXProject "Mumble" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				7507492A2F8D3E040064878A /* Debug */,
-				7507492B2F8D3E040064878A /* Release */,
+				7507492A2F8D3E040064878A /* Debug configuration for PBXProject "Mumble" */,
+				7507492B2F8D3E040064878A /* Release configuration for PBXProject "Mumble" */,
 			);
-			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
 		7507492C2F8D3E040064878A /* Build configuration list for PBXNativeTarget "Mumble" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				7507492D2F8D3E040064878A /* Debug */,
-				7507492E2F8D3E040064878A /* Release */,
+				7507492D2F8D3E040064878A /* Debug configuration for PBXNativeTarget "Mumble" */,
+				7507492E2F8D3E040064878A /* Release configuration for PBXNativeTarget "Mumble" */,
 			);
-			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
 		7507492F2F8D3E040064878A /* Build configuration list for PBXNativeTarget "MumbleTests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				750749302F8D3E040064878A /* Debug */,
-				750749312F8D3E040064878A /* Release */,
+				750749302F8D3E040064878A /* Debug configuration for PBXNativeTarget "MumbleTests" */,
+				750749312F8D3E040064878A /* Release configuration for PBXNativeTarget "MumbleTests" */,
 			);
-			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
 		750749322F8D3E040064878A /* Build configuration list for PBXNativeTarget "MumbleUITests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				750749332F8D3E040064878A /* Debug */,
-				750749342F8D3E040064878A /* Release */,
+				750749332F8D3E040064878A /* Debug configuration for PBXNativeTarget "MumbleUITests" */,
+				750749342F8D3E040064878A /* Release configuration for PBXNativeTarget "MumbleUITests" */,
 			);
-			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */

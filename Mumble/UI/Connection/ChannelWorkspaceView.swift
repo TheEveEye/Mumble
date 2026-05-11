@@ -804,9 +804,9 @@ private extension MumbleUserTalkState {
             case .talking:
                 return .blue
             case .shouting:
-                return .yellow
+                return .blue
             case .whispering:
-                return .purple
+                return .yellow
             case .channelListening:
                 return .gray
             }
