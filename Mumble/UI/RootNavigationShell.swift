@@ -2,10 +2,20 @@ import AppKit
 import SwiftUI
 import SwiftData
 
+private struct SelfMuteDeafState: Equatable {
+    let isSelfMuted: Bool
+    let isSelfDeafened: Bool
+
+    var isEffectivelyMuted: Bool {
+        isSelfMuted || isSelfDeafened
+    }
+}
+
 struct RootNavigationShell: View {
     let dependencies: AppDependencies
 
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.appearsActive) private var appearsActive
     @Query private var servers: [SavedServer]
     @Query private var audioPreferences: [AudioPreferences]
 
@@ -32,6 +42,7 @@ struct RootNavigationShell: View {
     @State private var activePushToTalkHotkey: MumbleHotkey?
     @State private var localPushToTalkHotkey: MumbleHotkey?
     @State private var shoutPushToTalkHotkey: MumbleHotkey?
+    @State private var optimisticSelfMuteDeafState: SelfMuteDeafState?
 
     private var activeServer: SavedServer? {
         guard let connectedServerID else {
@@ -53,8 +64,24 @@ struct RootNavigationShell: View {
         connectedServerID != nil && channelConnectionHandle != nil && currentSessionUser != nil
     }
 
+    private var currentSelfMuteDeafState: SelfMuteDeafState? {
+        currentSessionUser.map {
+            SelfMuteDeafState(
+                isSelfMuted: $0.isSelfMuted,
+                isSelfDeafened: $0.isSelfDeafened
+            )
+        }
+    }
+
+    private var selfMuteDeafToolbarState: SelfMuteDeafState {
+        optimisticSelfMuteDeafState ?? currentSelfMuteDeafState ?? SelfMuteDeafState(
+            isSelfMuted: false,
+            isSelfDeafened: false
+        )
+    }
+
     private var isCurrentSessionEffectivelyMuted: Bool {
-        currentSessionUser?.isSelfMuted == true || currentSessionUser?.isSelfDeafened == true
+        selfMuteDeafToolbarState.isEffectivelyMuted
     }
 
     private var selfMuteToolbarImageName: String {
@@ -65,12 +92,24 @@ struct RootNavigationShell: View {
         isCurrentSessionEffectivelyMuted ? "Unmute yourself" : "Mute yourself"
     }
 
+    private var selfMuteToolbarColor: Color {
+        toolbarStatusColor(isCurrentSessionEffectivelyMuted ? Color.red : Color.green)
+    }
+
     private var selfDeafenToolbarImageName: String {
-        currentSessionUser?.isSelfDeafened == true ? "speaker.slash.fill" : "headphones"
+        selfMuteDeafToolbarState.isSelfDeafened ? "speaker.slash.fill" : "speaker.wave.2.fill"
     }
 
     private var selfDeafenToolbarHelpText: String {
-        currentSessionUser?.isSelfDeafened == true ? "Undeafen yourself" : "Deafen yourself"
+        selfMuteDeafToolbarState.isSelfDeafened ? "Undeafen yourself" : "Deafen yourself"
+    }
+
+    private var selfDeafenToolbarColor: Color {
+        toolbarStatusColor(selfMuteDeafToolbarState.isSelfDeafened ? Color.red : Color.green)
+    }
+
+    private func toolbarStatusColor(_ color: Color) -> Color {
+        color.opacity(appearsActive ? 1.0 : 0.55)
     }
 
     private var hotkeyConfiguration: String {
@@ -169,6 +208,7 @@ struct RootNavigationShell: View {
                     toggleSelfMute()
                 } label: {
                     Image(systemName: selfMuteToolbarImageName)
+                        .foregroundStyle(selfMuteToolbarColor)
                 }
                 .disabled(!canUpdateSelfMuteDeafState)
                 .help(selfMuteToolbarHelpText)
@@ -177,6 +217,7 @@ struct RootNavigationShell: View {
                     toggleSelfDeafen()
                 } label: {
                     Image(systemName: selfDeafenToolbarImageName)
+                        .foregroundStyle(selfDeafenToolbarColor)
                 }
                 .disabled(!canUpdateSelfMuteDeafState)
                 .help(selfDeafenToolbarHelpText)
@@ -213,6 +254,7 @@ struct RootNavigationShell: View {
             userSnapshot = []
             talkStatesBySessionID = [:]
             currentSessionID = nil
+            optimisticSelfMuteDeafState = nil
             isLoadingChannels = false
             connectionStatus = "Not connected"
             Task { await dependencies.audioPlayback.stop() }
@@ -231,6 +273,7 @@ struct RootNavigationShell: View {
         userSnapshot = []
         talkStatesBySessionID = [:]
         currentSessionID = nil
+        optimisticSelfMuteDeafState = nil
         isLoadingChannels = false
         connectionStatus = "Not connected"
 
@@ -264,6 +307,7 @@ struct RootNavigationShell: View {
         userSnapshot = []
         talkStatesBySessionID = [:]
         currentSessionID = nil
+        optimisticSelfMuteDeafState = nil
         isLoadingChannels = true
         connectedServerID = serverID
         connectDialogSelectionID = serverID
@@ -316,6 +360,7 @@ struct RootNavigationShell: View {
             currentSessionID = nil
             userSnapshot = []
             talkStatesBySessionID = [:]
+            optimisticSelfMuteDeafState = nil
             isLoadingChannels = channelSnapshot.isEmpty
             connectionStatus = "Reconnecting to \(serverDisplayName)"
             appendLog(reason)
@@ -344,6 +389,7 @@ struct RootNavigationShell: View {
             }
 
             userSnapshot = users
+            reconcileOptimisticSelfMuteDeafState()
         case .talkStateChanged(let sessionID, let talkState):
             guard connectedServerID == serverID else {
                 return
@@ -364,6 +410,7 @@ struct RootNavigationShell: View {
             userSnapshot = []
             talkStatesBySessionID = [:]
             currentSessionID = nil
+            optimisticSelfMuteDeafState = nil
             isLoadingChannels = false
             connectionStatus = "Not connected"
 
@@ -391,9 +438,23 @@ struct RootNavigationShell: View {
             userSnapshot = []
             talkStatesBySessionID = [:]
             currentSessionID = nil
+            optimisticSelfMuteDeafState = nil
             isLoadingChannels = false
             connectionStatus = "Not connected"
         }
+    }
+
+    private func reconcileOptimisticSelfMuteDeafState() {
+        guard optimisticSelfMuteDeafState != nil else {
+            return
+        }
+
+        guard currentSelfMuteDeafState != nil else {
+            optimisticSelfMuteDeafState = nil
+            return
+        }
+
+        optimisticSelfMuteDeafState = nil
     }
 
     private func joinChannel(_ channel: MumbleChannel) {
@@ -415,13 +476,18 @@ struct RootNavigationShell: View {
     }
 
     private func toggleSelfMute() {
-        guard let currentSessionUser else {
+        guard canUpdateSelfMuteDeafState else {
             return
         }
 
-        let isEffectivelyMuted = currentSessionUser.isSelfMuted || currentSessionUser.isSelfDeafened
+        let currentToolbarState = selfMuteDeafToolbarState
+        let isEffectivelyMuted = currentToolbarState.isEffectivelyMuted
         let nextIsSelfMuted = !isEffectivelyMuted
-        let nextIsSelfDeafened = isEffectivelyMuted ? false : currentSessionUser.isSelfDeafened
+        let nextIsSelfDeafened = isEffectivelyMuted ? false : currentToolbarState.isSelfDeafened
+        optimisticSelfMuteDeafState = SelfMuteDeafState(
+            isSelfMuted: nextIsSelfMuted,
+            isSelfDeafened: nextIsSelfDeafened
+        )
         channelConnectionHandle?.setSelfMuteDeafState(
             isSelfMuted: nextIsSelfMuted,
             isSelfDeafened: nextIsSelfDeafened
@@ -429,12 +495,17 @@ struct RootNavigationShell: View {
     }
 
     private func toggleSelfDeafen() {
-        guard let currentSessionUser else {
+        guard canUpdateSelfMuteDeafState else {
             return
         }
 
-        let nextIsSelfDeafened = !currentSessionUser.isSelfDeafened
-        let nextIsSelfMuted = nextIsSelfDeafened ? true : currentSessionUser.isSelfMuted
+        let currentToolbarState = selfMuteDeafToolbarState
+        let nextIsSelfDeafened = !currentToolbarState.isSelfDeafened
+        let nextIsSelfMuted = nextIsSelfDeafened ? true : currentToolbarState.isSelfMuted
+        optimisticSelfMuteDeafState = SelfMuteDeafState(
+            isSelfMuted: nextIsSelfMuted,
+            isSelfDeafened: nextIsSelfDeafened
+        )
         channelConnectionHandle?.setSelfMuteDeafState(
             isSelfMuted: nextIsSelfMuted,
             isSelfDeafened: nextIsSelfDeafened

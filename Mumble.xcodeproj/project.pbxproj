@@ -14,19 +14,11 @@
 			remoteGlobalIDString = 750749082F8D3E030064878A;
 			remoteInfo = Mumble;
 		};
-		750749232F8D3E040064878A /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = 750749012F8D3E030064878A /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = 750749082F8D3E030064878A;
-			remoteInfo = Mumble;
-		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		750749092F8D3E030064878A /* Mumble.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Mumble.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		750749182F8D3E040064878A /* MumbleTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MumbleTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		750749222F8D3E040064878A /* MumbleUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MumbleUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -38,11 +30,6 @@
 		7507491B2F8D3E040064878A /* MumbleTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = MumbleTests;
-			sourceTree = "<group>";
-		};
-		750749252F8D3E040064878A /* MumbleUITests */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = MumbleUITests;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -58,11 +45,6 @@
 			files = (
 			);
 		};
-		7507491F2F8D3E040064878A /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			files = (
-			);
-		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -71,7 +53,6 @@
 			children = (
 				7507490B2F8D3E030064878A /* Mumble */,
 				7507491B2F8D3E040064878A /* MumbleTests */,
-				750749252F8D3E040064878A /* MumbleUITests */,
 				7507490A2F8D3E030064878A /* Products */,
 			);
 			sourceTree = "<group>";
@@ -81,7 +62,6 @@
 			children = (
 				750749092F8D3E030064878A /* Mumble.app */,
 				750749182F8D3E040064878A /* MumbleTests.xctest */,
-				750749222F8D3E040064878A /* MumbleUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -128,27 +108,6 @@
 			productReference = 750749182F8D3E040064878A /* MumbleTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
-		750749212F8D3E040064878A /* MumbleUITests */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = 750749322F8D3E040064878A /* Build configuration list for PBXNativeTarget "MumbleUITests" */;
-			buildPhases = (
-				7507491E2F8D3E040064878A /* Sources */,
-				7507491F2F8D3E040064878A /* Frameworks */,
-				750749202F8D3E040064878A /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-				750749242F8D3E040064878A /* PBXTargetDependency */,
-			);
-			fileSystemSynchronizedGroups = (
-				750749252F8D3E040064878A /* MumbleUITests */,
-			);
-			name = MumbleUITests;
-			productName = MumbleUITests;
-			productReference = 750749222F8D3E040064878A /* MumbleUITests.xctest */;
-			productType = "com.apple.product-type.bundle.ui-testing";
-		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -163,10 +122,6 @@
 						CreatedOnToolsVersion = 26.5;
 					};
 					750749172F8D3E040064878A = {
-						CreatedOnToolsVersion = 26.5;
-						TestTargetID = 750749082F8D3E030064878A;
-					};
-					750749212F8D3E040064878A = {
 						CreatedOnToolsVersion = 26.5;
 						TestTargetID = 750749082F8D3E030064878A;
 					};
@@ -188,7 +143,6 @@
 			targets = (
 				750749082F8D3E030064878A /* Mumble */,
 				750749172F8D3E040064878A /* MumbleTests */,
-				750749212F8D3E040064878A /* MumbleUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -200,11 +154,6 @@
 			);
 		};
 		750749162F8D3E040064878A /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			files = (
-			);
-		};
-		750749202F8D3E040064878A /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
 			);
@@ -222,11 +171,6 @@
 			files = (
 			);
 		};
-		7507491E2F8D3E040064878A /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			files = (
-			);
-		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -234,11 +178,6 @@
 			isa = PBXTargetDependency;
 			target = 750749082F8D3E030064878A /* Mumble */;
 			targetProxy = 750749192F8D3E040064878A /* PBXContainerItemProxy */;
-		};
-		750749242F8D3E040064878A /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = 750749082F8D3E030064878A /* Mumble */;
-			targetProxy = 750749232F8D3E040064878A /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -366,7 +305,6 @@
 		7507492D2F8D3E040064878A /* Debug configuration for PBXNativeTarget "Mumble" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = MumbleIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGN_ENTITLEMENTS = Mumble/Mumble.entitlements;
@@ -404,7 +342,6 @@
 		7507492E2F8D3E040064878A /* Release configuration for PBXNativeTarget "Mumble" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = MumbleIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGN_ENTITLEMENTS = Mumble/Mumble.entitlements;
@@ -443,6 +380,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 5KP38NQP6R;
@@ -464,6 +402,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 5KP38NQP6R;
@@ -478,44 +417,6 @@
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Mumble.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Mumble";
-			};
-			name = Release;
-		};
-		750749332F8D3E040064878A /* Debug configuration for PBXNativeTarget "MumbleUITests" */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 5KP38NQP6R;
-				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = dev.kiwiapps.MumbleUITests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				STRING_CATALOG_GENERATE_SYMBOLS = NO;
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 5.0;
-				TEST_TARGET_NAME = Mumble;
-			};
-			name = Debug;
-		};
-		750749342F8D3E040064878A /* Release configuration for PBXNativeTarget "MumbleUITests" */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 5KP38NQP6R;
-				GENERATE_INFOPLIST_FILE = YES;
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = dev.kiwiapps.MumbleUITests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				STRING_CATALOG_GENERATE_SYMBOLS = NO;
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 5.0;
-				TEST_TARGET_NAME = Mumble;
 			};
 			name = Release;
 		};
@@ -543,14 +444,6 @@
 			buildConfigurations = (
 				750749302F8D3E040064878A /* Debug configuration for PBXNativeTarget "MumbleTests" */,
 				750749312F8D3E040064878A /* Release configuration for PBXNativeTarget "MumbleTests" */,
-			);
-			defaultConfigurationName = Release;
-		};
-		750749322F8D3E040064878A /* Build configuration list for PBXNativeTarget "MumbleUITests" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				750749332F8D3E040064878A /* Debug configuration for PBXNativeTarget "MumbleUITests" */,
-				750749342F8D3E040064878A /* Release configuration for PBXNativeTarget "MumbleUITests" */,
 			);
 			defaultConfigurationName = Release;
 		};
