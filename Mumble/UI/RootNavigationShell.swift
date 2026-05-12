@@ -37,10 +37,9 @@ struct RootNavigationShell: View {
     @State private var passwordPromptContext: ServerPasswordPromptContext?
     @State private var certificateTrustPrompt: MumbleCertificateTrustChallenge?
     @State private var localPushToTalkMonitor: Any?
-    @State private var activePushToTalkMode: MumblePushToTalkMode?
-    @State private var activePushToTalkHotkey: MumbleHotkey?
-    @State private var localPushToTalkHotkey: MumbleHotkey?
-    @State private var shoutPushToTalkHotkey: MumbleHotkey?
+    @State private var globalPushToTalkMonitor: MumbleGlobalInputMonitor?
+    @State private var pushToTalkInputController = MumblePushToTalkInputController()
+    @AppStorage("inputMonitoringRelaunchRequired") private var inputMonitoringRelaunchRequired = false
     @State private var optimisticSelfMuteDeafState: SelfMuteDeafState?
 
     private var activeServer: SavedServer? {
@@ -147,6 +146,11 @@ struct RootNavigationShell: View {
         }
         .onChange(of: hotkeyConfiguration) {
             syncPushToTalkHotkeys()
+        }
+        .onChange(of: appearsActive) {
+            if appearsActive {
+                installPushToTalkMonitor()
+            }
         }
         .onChange(of: servers.count) {
             syncActiveServer()
@@ -581,6 +585,24 @@ struct RootNavigationShell: View {
     private func installPushToTalkMonitor() {
         removePushToTalkMonitor()
 
+        if MumbleGlobalInputMonitor.hasListenEventAccess() {
+            let monitor = MumbleGlobalInputMonitor { event in
+                handlePushToTalkEvent(event)
+            }
+
+            do {
+                try monitor.start()
+                globalPushToTalkMonitor = monitor
+                inputMonitoringRelaunchRequired = false
+                return
+            } catch MumbleGlobalInputMonitor.StartError.eventTapUnavailable {
+                inputMonitoringRelaunchRequired = true
+                dependencies.logger.error("Input Monitoring is granted, but the global push-to-talk event tap could not start. Relaunch Mumble and try again.")
+            } catch {
+                dependencies.logger.error("Failed to start global push-to-talk monitoring: \(error.localizedDescription)")
+            }
+        }
+
         let eventMask: NSEvent.EventTypeMask = [
             .keyDown,
             .keyUp,
@@ -600,84 +622,50 @@ struct RootNavigationShell: View {
             NSEvent.removeMonitor(localPushToTalkMonitor)
             self.localPushToTalkMonitor = nil
         }
+
+        globalPushToTalkMonitor?.stop()
+        globalPushToTalkMonitor = nil
     }
 
     private func syncPushToTalkHotkeys() {
         let preferences = audioPreferences.first
-        localPushToTalkHotkey = MumbleHotkey.parse(
-            AudioPreferences.normalizeHotkey(preferences?.localPushToTalkKey ?? "#")
-        )
-        shoutPushToTalkHotkey = MumbleHotkey.parse(
-            AudioPreferences.normalizeHotkey(preferences?.shoutPushToTalkKey ?? "")
+        let result = pushToTalkInputController.updateHotkeys(
+            local: MumbleHotkey.parse(
+                AudioPreferences.normalizeHotkey(preferences?.localPushToTalkKey ?? "#")
+            ),
+            linkedChannels: MumbleHotkey.parse(
+                AudioPreferences.normalizeHotkey(preferences?.shoutPushToTalkKey ?? "")
+            )
         )
 
-        if
-            let activePushToTalkHotkey,
-            activePushToTalkHotkey != localPushToTalkHotkey,
-            activePushToTalkHotkey != shoutPushToTalkHotkey
-        {
-            resetPushToTalk()
-        }
+        applyPushToTalkResult(result)
 
         installPushToTalkMonitor()
     }
 
     private func handlePushToTalkEvent(_ event: NSEvent) -> NSEvent? {
-        if event.type == .flagsChanged {
-            guard
-                let currentPushToTalkHotkey = activePushToTalkHotkey,
-                currentPushToTalkHotkey.modifiersStillPressed(in: event.modifierFlags) == false
-            else {
-                return event
-            }
-
-            activePushToTalkHotkey = nil
-            activePushToTalkMode = nil
-            stopPushToTalk()
-            return nil
-        }
-
-        if let (mode, hotkey) = pushToTalkBinding(for: event) {
-            if event.type == .keyDown || event.type == .otherMouseDown {
-                if event.type == .keyDown && event.isARepeat {
-                    return nil
-                }
-
-                if activePushToTalkMode != mode || activePushToTalkHotkey != hotkey {
-                    activePushToTalkMode = mode
-                    activePushToTalkHotkey = hotkey
-                    startPushToTalk(mode: mode)
-                }
-                return nil
-            }
-        }
-
-        guard let currentPushToTalkHotkey = activePushToTalkHotkey, currentPushToTalkHotkey.matchesRelease(event: event) else {
+        guard let inputEvent = MumbleInputEvent(event: event) else {
             return event
         }
 
-        activePushToTalkHotkey = nil
-        activePushToTalkMode = nil
-
-        switch event.type {
-        case .keyUp, .otherMouseUp:
-            stopPushToTalk()
-            return nil
-        default:
-            return event
-        }
+        let result = pushToTalkInputController.handle(inputEvent)
+        applyPushToTalkResult(result)
+        return result.shouldConsumeLocalEvent ? nil : event
     }
 
-    private func pushToTalkBinding(for event: NSEvent) -> (MumblePushToTalkMode, MumbleHotkey)? {
-        if let shoutPushToTalkHotkey, shoutPushToTalkHotkey.matchesPress(event: event) {
-            return (.linkedChannels, shoutPushToTalkHotkey)
-        }
+    private func handlePushToTalkEvent(_ event: MumbleInputEvent) {
+        applyPushToTalkResult(pushToTalkInputController.handle(event))
+    }
 
-        if let localPushToTalkHotkey, localPushToTalkHotkey.matchesPress(event: event) {
-            return (.localChannel, localPushToTalkHotkey)
+    private func applyPushToTalkResult(_ result: MumblePushToTalkInputResult) {
+        switch result.action {
+        case .none:
+            return
+        case .start(let mode):
+            startPushToTalk(mode: mode)
+        case .stop:
+            stopPushToTalk()
         }
-
-        return nil
     }
 
 
@@ -699,9 +687,7 @@ struct RootNavigationShell: View {
     }
 
     private func resetPushToTalk() {
-        activePushToTalkMode = nil
-        activePushToTalkHotkey = nil
-        stopPushToTalk()
+        applyPushToTalkResult(pushToTalkInputController.reset())
     }
 
     private func formattedReconnectDelay(_ delay: TimeInterval) -> String {

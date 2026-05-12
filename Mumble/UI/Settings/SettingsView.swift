@@ -5,6 +5,8 @@ import SwiftData
 struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
     @Query private var audioPreferences: [AudioPreferences]
+    @AppStorage("inputMonitoringRelaunchRequired") private var inputMonitoringRelaunchRequired = false
+    @State private var isInputMonitoringGranted = MumbleGlobalInputMonitor.hasListenEventAccess()
 
     var body: some View {
         Group {
@@ -32,11 +34,20 @@ struct SettingsView: View {
                         Text("Supports modifier keybinds, function keys, and Mouse4/Mouse5. Leave the linked-channel hotkey blank to disable shouting.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+
+                        InputMonitoringStatusRow(
+                            isGranted: isInputMonitoringGranted,
+                            relaunchRequired: inputMonitoringRelaunchRequired,
+                            onRequestAccess: requestInputMonitoringAccess
+                        )
                     }
                 }
                 .formStyle(.grouped)
                 .padding(20)
                 .frame(width: 520)
+                .onAppear {
+                    refreshInputMonitoringStatus()
+                }
             } else {
                 ProgressView()
                     .frame(width: 520, height: 180)
@@ -57,6 +68,56 @@ struct SettingsView: View {
         let preferences = AudioPreferences.defaultProfile()
         modelContext.insert(preferences)
         try? modelContext.save()
+    }
+
+    private func refreshInputMonitoringStatus() {
+        isInputMonitoringGranted = MumbleGlobalInputMonitor.hasListenEventAccess()
+        if !isInputMonitoringGranted {
+            inputMonitoringRelaunchRequired = false
+        }
+    }
+
+    private func requestInputMonitoringAccess() {
+        isInputMonitoringGranted = MumbleGlobalInputMonitor.requestListenEventAccess()
+        if isInputMonitoringGranted {
+            refreshInputMonitoringStatus()
+        }
+    }
+}
+
+private struct InputMonitoringStatusRow: View {
+    let isGranted: Bool
+    let relaunchRequired: Bool
+    let onRequestAccess: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Label("Input Monitoring", systemImage: isGranted ? "checkmark.circle.fill" : "exclamationmark.circle")
+                    .foregroundStyle(isGranted ? Color.green : Color.orange)
+                Spacer()
+
+                if !isGranted {
+                    Button("Enable Input Monitoring", action: onRequestAccess)
+                }
+            }
+
+            Text(statusMessage)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var statusMessage: String {
+        if isGranted && relaunchRequired {
+            return "Input Monitoring is granted. Relaunch Mumble if global push-to-talk does not start in other apps."
+        }
+
+        if isGranted {
+            return "Global push-to-talk is enabled for other apps."
+        }
+
+        return "Grant Input Monitoring to use push-to-talk while another app is focused. Focused-window push-to-talk still works without it."
     }
 }
 

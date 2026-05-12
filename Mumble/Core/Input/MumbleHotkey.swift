@@ -129,26 +129,32 @@ struct MumbleHotkey: Equatable, Hashable, Sendable {
     }
 
     static func recordingHotkey(from event: NSEvent) -> MumbleHotkey? {
-        let modifiers = Self.modifiers(from: event.modifierFlags)
+        guard let inputEvent = MumbleInputEvent(event: event) else {
+            return nil
+        }
 
-        if let keyEvent = keyboardEvent(from: event), keyEvent.isKeyDown {
-            guard !Self.isModifierOnlyKeyCode(keyEvent.keyCode) else {
+        return recordingHotkey(from: inputEvent)
+    }
+
+    static func recordingHotkey(from event: MumbleInputEvent) -> MumbleHotkey? {
+        switch event.kind {
+        case .keyDown:
+            guard let keyCode = event.keyCode, !Self.isModifierOnlyKeyCode(keyCode) else {
                 return nil
             }
 
             return MumbleHotkey(
-                trigger: .keyboard(keyCode: keyEvent.keyCode),
-                modifiers: modifiers,
-                displayLabel: keyEvent.displayLabel
+                trigger: .keyboard(keyCode: keyCode),
+                modifiers: event.modifiers,
+                displayLabel: keyboardDisplayLabel(from: event)
             )
-        }
-
-        switch event.type {
         case .otherMouseDown:
-            let buttonNumber = Int(event.buttonNumber)
+            guard let buttonNumber = event.mouseButtonNumber else {
+                return nil
+            }
             return MumbleHotkey(
                 trigger: .mouse(buttonNumber: buttonNumber),
-                modifiers: modifiers,
+                modifiers: event.modifiers,
                 displayLabel: mouseDisplayLabel(buttonNumber: buttonNumber)
             )
         default:
@@ -157,17 +163,25 @@ struct MumbleHotkey: Equatable, Hashable, Sendable {
     }
 
     func matchesPress(event: NSEvent) -> Bool {
-        switch (trigger, event.type) {
-        case (.keyboard(let keyCode), .keyDown), (.keyboard(let keyCode), .systemDefined):
-            guard let keyEvent = Self.keyboardEvent(from: event), keyEvent.isKeyDown else {
+        guard let inputEvent = MumbleInputEvent(event: event) else {
+            return false
+        }
+
+        return matchesPress(event: inputEvent)
+    }
+
+    func matchesPress(event: MumbleInputEvent) -> Bool {
+        switch (trigger, event.kind) {
+        case (.keyboard(let keyCode), .keyDown):
+            guard let eventKeyCode = event.keyCode else {
                 return false
             }
 
-            return keyCode == keyEvent.keyCode && modifiers == Self.modifiers(from: event.modifierFlags)
+            return keyCode == eventKeyCode && modifiers == event.modifiers
         case (.mouse(let buttonNumber), .otherMouseDown):
-            return buttonNumber == Int(event.buttonNumber) && modifiers == Self.modifiers(from: event.modifierFlags)
+            return buttonNumber == event.mouseButtonNumber && modifiers == event.modifiers
         case (.legacyCharacter(let character), .keyDown):
-            guard Self.modifiers(from: event.modifierFlags).isEmpty else {
+            guard event.modifiers.isEmpty else {
                 return false
             }
 
@@ -182,15 +196,23 @@ struct MumbleHotkey: Equatable, Hashable, Sendable {
     }
 
     func matchesRelease(event: NSEvent) -> Bool {
-        switch (trigger, event.type) {
-        case (.keyboard(let keyCode), .keyUp), (.keyboard(let keyCode), .systemDefined):
-            guard let keyEvent = Self.keyboardEvent(from: event), keyEvent.isKeyDown == false else {
+        guard let inputEvent = MumbleInputEvent(event: event) else {
+            return false
+        }
+
+        return matchesRelease(event: inputEvent)
+    }
+
+    func matchesRelease(event: MumbleInputEvent) -> Bool {
+        switch (trigger, event.kind) {
+        case (.keyboard(let keyCode), .keyUp):
+            guard let eventKeyCode = event.keyCode else {
                 return false
             }
 
-            return keyCode == keyEvent.keyCode
+            return keyCode == eventKeyCode
         case (.mouse(let buttonNumber), .otherMouseUp):
-            return buttonNumber == Int(event.buttonNumber)
+            return buttonNumber == event.mouseButtonNumber
         case (.legacyCharacter(let character), .keyUp):
             guard let typedCharacter = event.characters?.trimmingCharacters(in: .whitespacesAndNewlines).first else {
                 return false
@@ -203,31 +225,15 @@ struct MumbleHotkey: Equatable, Hashable, Sendable {
     }
 
     func modifiersStillPressed(in modifierFlags: NSEvent.ModifierFlags) -> Bool {
-        let currentModifiers = Self.modifiers(from: modifierFlags)
+        let currentModifiers = Modifiers(nseventFlags: modifierFlags)
+        return modifiersStillPressed(in: currentModifiers)
+    }
+
+    func modifiersStillPressed(in currentModifiers: Modifiers) -> Bool {
         return currentModifiers.isSuperset(of: modifiers)
     }
 
-    private static func modifiers(from modifierFlags: NSEvent.ModifierFlags) -> Modifiers {
-        let normalizedFlags = modifierFlags.intersection(.deviceIndependentFlagsMask)
-        var modifiers: Modifiers = []
-
-        if normalizedFlags.contains(.control) {
-            modifiers.insert(.control)
-        }
-        if normalizedFlags.contains(.option) {
-            modifiers.insert(.option)
-        }
-        if normalizedFlags.contains(.shift) {
-            modifiers.insert(.shift)
-        }
-        if normalizedFlags.contains(.command) {
-            modifiers.insert(.command)
-        }
-
-        return modifiers
-    }
-
-    private static func keyboardDisplayLabel(from event: NSEvent) -> String {
+    static func keyboardDisplayLabel(from event: NSEvent) -> String {
         if let specialLabel = specialKeyboardLabels[event.keyCode] {
             return specialLabel
         }
@@ -242,11 +248,29 @@ struct MumbleHotkey: Equatable, Hashable, Sendable {
         return keyboardDisplayLabel(keyCode: event.keyCode)
     }
 
-    private static func keyboardDisplayLabel(keyCode: UInt16) -> String {
+    static func keyboardDisplayLabel(from event: MumbleInputEvent) -> String {
+        guard let keyCode = event.keyCode else {
+            return "Key"
+        }
+
+        if let specialLabel = specialKeyboardLabels[keyCode] {
+            return specialLabel
+        }
+
+        if let characters = event.charactersIgnoringModifiers?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !characters.isEmpty
+        {
+            return characters.uppercased()
+        }
+
+        return keyboardDisplayLabel(keyCode: keyCode)
+    }
+
+    static func keyboardDisplayLabel(keyCode: UInt16) -> String {
         specialKeyboardLabels[keyCode] ?? "Key \(keyCode)"
     }
 
-    private static func mouseDisplayLabel(buttonNumber: Int) -> String {
+    static func mouseDisplayLabel(buttonNumber: Int) -> String {
         "Mouse\(buttonNumber + 1)"
     }
 
@@ -264,44 +288,6 @@ struct MumbleHotkey: Equatable, Hashable, Sendable {
 
     private static func isModifierOnlyKeyCode(_ keyCode: UInt16) -> Bool {
         modifierOnlyKeyCodes.contains(keyCode)
-    }
-
-    private static func keyboardEvent(from event: NSEvent) -> (keyCode: UInt16, displayLabel: String, isKeyDown: Bool)? {
-        switch event.type {
-        case .keyDown:
-            return (event.keyCode, keyboardDisplayLabel(from: event), true)
-        case .keyUp:
-            return (event.keyCode, keyboardDisplayLabel(from: event), false)
-        case .systemDefined:
-            let supportedSubtypes: Set<Int16> = [8, 14]
-            guard supportedSubtypes.contains(event.subtype.rawValue) else {
-                return nil
-            }
-
-            let data1 = UInt32(bitPattern: Int32(event.data1))
-            let keyCode = UInt16((data1 & 0xFFFF0000) >> 16)
-            let lowWord = UInt16(data1 & 0x0000FFFF)
-            let stateFromHighByte = UInt8((lowWord & 0xFF00) >> 8)
-            let stateFromLowByte = UInt8(lowWord & 0x00FF)
-            let state: UInt8
-
-            if stateFromHighByte == 0xA || stateFromHighByte == 0xB {
-                state = stateFromHighByte
-            } else {
-                state = stateFromLowByte
-            }
-
-            switch state {
-            case 0xA:
-                return (keyCode, keyboardDisplayLabel(keyCode: keyCode), true)
-            case 0xB:
-                return (keyCode, keyboardDisplayLabel(keyCode: keyCode), false)
-            default:
-                return nil
-            }
-        default:
-            return nil
-        }
     }
 
     private static let modifierOnlyKeyCodes: Set<UInt16> = [
