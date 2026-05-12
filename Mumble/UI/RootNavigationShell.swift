@@ -37,7 +37,6 @@ struct RootNavigationShell: View {
     @State private var passwordPromptContext: ServerPasswordPromptContext?
     @State private var certificateTrustPrompt: MumbleCertificateTrustChallenge?
     @State private var localPushToTalkMonitor: Any?
-    @State private var globalPushToTalkMonitor: Any?
     @State private var activePushToTalkMode: MumblePushToTalkMode?
     @State private var activePushToTalkHotkey: MumbleHotkey?
     @State private var localPushToTalkHotkey: MumbleHotkey?
@@ -592,11 +591,7 @@ struct RootNavigationShell: View {
         ]
 
         localPushToTalkMonitor = NSEvent.addLocalMonitorForEvents(matching: eventMask) { event in
-            handlePushToTalkEvent(event, consumeEvents: true)
-        }
-
-        globalPushToTalkMonitor = NSEvent.addGlobalMonitorForEvents(matching: eventMask) { event in
-            _ = handlePushToTalkEvent(event, consumeEvents: false)
+            handlePushToTalkEvent(event)
         }
     }
 
@@ -604,11 +599,6 @@ struct RootNavigationShell: View {
         if let localPushToTalkMonitor {
             NSEvent.removeMonitor(localPushToTalkMonitor)
             self.localPushToTalkMonitor = nil
-        }
-
-        if let globalPushToTalkMonitor {
-            NSEvent.removeMonitor(globalPushToTalkMonitor)
-            self.globalPushToTalkMonitor = nil
         }
     }
 
@@ -632,7 +622,7 @@ struct RootNavigationShell: View {
         installPushToTalkMonitor()
     }
 
-    private func handlePushToTalkEvent(_ event: NSEvent, consumeEvents: Bool) -> NSEvent? {
+    private func handlePushToTalkEvent(_ event: NSEvent) -> NSEvent? {
         if event.type == .flagsChanged {
             guard
                 let currentPushToTalkHotkey = activePushToTalkHotkey,
@@ -644,13 +634,13 @@ struct RootNavigationShell: View {
             activePushToTalkHotkey = nil
             activePushToTalkMode = nil
             stopPushToTalk()
-            return consumeEvents ? nil : event
+            return nil
         }
 
         if let (mode, hotkey) = pushToTalkBinding(for: event) {
             if event.type == .keyDown || event.type == .otherMouseDown {
                 if event.type == .keyDown && event.isARepeat {
-                    return consumeEvents ? nil : event
+                    return nil
                 }
 
                 if activePushToTalkMode != mode || activePushToTalkHotkey != hotkey {
@@ -658,7 +648,7 @@ struct RootNavigationShell: View {
                     activePushToTalkHotkey = hotkey
                     startPushToTalk(mode: mode)
                 }
-                return consumeEvents ? nil : event
+                return nil
             }
         }
 
@@ -672,7 +662,7 @@ struct RootNavigationShell: View {
         switch event.type {
         case .keyUp, .otherMouseUp:
             stopPushToTalk()
-            return consumeEvents ? nil : event
+            return nil
         default:
             return event
         }

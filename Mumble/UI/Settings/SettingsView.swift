@@ -67,7 +67,6 @@ private struct HotkeyRecorderField: View {
 
     @State private var isRecording = false
     @State private var localEventMonitor: Any?
-    @State private var globalEventMonitor: Any?
 
     var body: some View {
         HStack {
@@ -116,22 +115,18 @@ private struct HotkeyRecorderField: View {
         let eventMask: NSEvent.EventTypeMask = [.keyDown, .otherMouseDown, .systemDefined]
 
         localEventMonitor = NSEvent.addLocalMonitorForEvents(matching: eventMask) { event in
-            handleRecordedEvent(event, consumeEvent: true)
-        }
-
-        globalEventMonitor = NSEvent.addGlobalMonitorForEvents(matching: eventMask) { event in
-            _ = handleRecordedEvent(event, consumeEvent: false)
+            handleRecordedEvent(event)
         }
     }
 
-    private func handleRecordedEvent(_ event: NSEvent, consumeEvent: Bool) -> NSEvent? {
+    private func handleRecordedEvent(_ event: NSEvent) -> NSEvent? {
         guard isRecording else {
             return event
         }
 
         if event.type == .keyDown, event.keyCode == 53 {
             stopRecording()
-            return consumeEvent ? nil : event
+            return nil
         }
 
         guard let hotkey = MumbleHotkey.recordingHotkey(from: event) else {
@@ -140,7 +135,7 @@ private struct HotkeyRecorderField: View {
 
         storage = hotkey.storageString
         stopRecording()
-        return consumeEvent ? nil : event
+        return nil
     }
 
     private func stopRecording() {
@@ -149,11 +144,6 @@ private struct HotkeyRecorderField: View {
         if let localEventMonitor {
             NSEvent.removeMonitor(localEventMonitor)
             self.localEventMonitor = nil
-        }
-
-        if let globalEventMonitor {
-            NSEvent.removeMonitor(globalEventMonitor)
-            self.globalEventMonitor = nil
         }
     }
 }
