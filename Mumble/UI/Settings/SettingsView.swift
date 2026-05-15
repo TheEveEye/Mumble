@@ -8,9 +8,10 @@ struct SettingsView: View {
     @AppStorage("inputMonitoringRelaunchRequired") private var inputMonitoringRelaunchRequired = false
     @State private var isInputMonitoringGranted = MumbleGlobalInputMonitor.hasListenEventAccess()
     @State private var inputDevices: [MumbleAudioInputDevice] = []
-    @State private var inputDeviceLoadFailure: String?
+    @State private var outputDevices: [MumbleAudioOutputDevice] = []
+    @State private var audioDeviceLoadFailure: String?
 
-    private let inputDeviceCatalog = CoreAudioInputDeviceCatalog()
+    private let audioDeviceCatalog = CoreAudioInputDeviceCatalog()
 
     var body: some View {
         Group {
@@ -38,6 +39,27 @@ struct SettingsView: View {
                             }
                         }
 
+                        Picker(
+                            "Output Device",
+                            selection: Binding(
+                                get: { preferences.selectedOutputDeviceUID ?? "" },
+                                set: { preferences.selectedOutputDeviceUID = AudioPreferences.normalizeOutputDeviceUID($0) }
+                            )
+                        ) {
+                            Text("System Default").tag("")
+
+                            if
+                                let selectedUID = preferences.selectedOutputDeviceUID,
+                                !outputDevices.contains(where: { $0.uid == selectedUID })
+                            {
+                                Text("Missing Device").tag(selectedUID)
+                            }
+
+                            ForEach(outputDevices) { device in
+                                Text(device.pickerDisplayName).tag(device.uid)
+                            }
+                        }
+
                         if let selectedBluetoothInputDevice = selectedBluetoothInputDevice(preferences: preferences) {
                             Label(
                                 "\(selectedBluetoothInputDevice.displayName) is a Bluetooth microphone. macOS may reduce Bluetooth headphone audio quality while this mic is active.",
@@ -48,12 +70,8 @@ struct SettingsView: View {
                         }
 
                         HStack {
-                            if let inputDeviceLoadFailure {
-                                Text(inputDeviceLoadFailure)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            } else {
-                                Text("Output routing follows the current macOS output device.")
+                            if let audioDeviceLoadFailure {
+                                Text(audioDeviceLoadFailure)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -61,11 +79,11 @@ struct SettingsView: View {
                             Spacer()
 
                             Button {
-                                refreshInputDevices()
+                                refreshAudioDevices()
                             } label: {
                                 Image(systemName: "arrow.clockwise")
                             }
-                            .help("Refresh input devices")
+                            .help("Refresh audio devices")
                         }
                     }
 
@@ -104,7 +122,7 @@ struct SettingsView: View {
                 .frame(width: 520)
                 .onAppear {
                     refreshInputMonitoringStatus()
-                    refreshInputDevices()
+                    refreshAudioDevices()
                 }
             } else {
                 ProgressView()
@@ -142,13 +160,15 @@ struct SettingsView: View {
         }
     }
 
-    private func refreshInputDevices() {
+    private func refreshAudioDevices() {
         do {
-            inputDevices = try inputDeviceCatalog.inputDevices()
-            inputDeviceLoadFailure = nil
+            inputDevices = try audioDeviceCatalog.inputDevices()
+            outputDevices = try audioDeviceCatalog.outputDevices()
+            audioDeviceLoadFailure = nil
         } catch {
             inputDevices = []
-            inputDeviceLoadFailure = "Input devices could not be loaded: \(error.localizedDescription)"
+            outputDevices = []
+            audioDeviceLoadFailure = "Audio devices could not be loaded: \(error.localizedDescription)"
         }
     }
 

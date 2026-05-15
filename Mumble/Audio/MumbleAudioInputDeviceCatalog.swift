@@ -17,7 +17,7 @@ enum MumbleAudioDeviceTransportType: String, Sendable {
     case other
     case unknown
 
-    init(coreAudioValue: UInt32) {
+    nonisolated init(coreAudioValue: UInt32) {
         switch coreAudioValue {
         case kAudioDeviceTransportTypeBuiltIn:
             self = .builtIn
@@ -50,7 +50,7 @@ enum MumbleAudioDeviceTransportType: String, Sendable {
         }
     }
 
-    var displayName: String {
+    nonisolated var displayName: String {
         switch self {
         case .builtIn:
             return "Built-in"
@@ -93,17 +93,40 @@ struct MumbleAudioInputDevice: Identifiable, Sendable {
     let isDefaultInput: Bool
     let transportType: MumbleAudioDeviceTransportType
 
-    var id: String {
+    nonisolated var id: String {
         uid
     }
 
-    var usesBluetoothInput: Bool {
+    nonisolated var usesBluetoothInput: Bool {
         transportType == .bluetooth
     }
 
-    var pickerDisplayName: String {
+    nonisolated var pickerDisplayName: String {
         var components = [displayName]
         if isDefaultInput {
+            components.append("Default")
+        }
+        components.append(transportType.displayName)
+        return components.joined(separator: " - ")
+    }
+}
+
+struct MumbleAudioOutputDevice: Identifiable, Sendable {
+    let audioDeviceID: AudioDeviceID
+    let uid: String
+    let displayName: String
+    let hasInput: Bool
+    let hasOutput: Bool
+    let isDefaultOutput: Bool
+    let transportType: MumbleAudioDeviceTransportType
+
+    nonisolated var id: String {
+        uid
+    }
+
+    nonisolated var pickerDisplayName: String {
+        var components = [displayName]
+        if isDefaultOutput {
             components.append("Default")
         }
         components.append(transportType.displayName)
@@ -122,7 +145,27 @@ struct MumbleAudioInputDeviceResolution: Sendable {
     let source: Source
     let requestedUID: String?
 
-    var didFallbackFromMissingSelection: Bool {
+    nonisolated var didFallbackFromMissingSelection: Bool {
+        if case .missingSelectionFallback = source {
+            return true
+        }
+
+        return false
+    }
+}
+
+struct MumbleAudioOutputDeviceResolution: Sendable {
+    enum Source: Sendable {
+        case systemDefault
+        case selected
+        case missingSelectionFallback
+    }
+
+    let device: MumbleAudioOutputDevice?
+    let source: Source
+    let requestedUID: String?
+
+    nonisolated var didFallbackFromMissingSelection: Bool {
         if case .missingSelectionFallback = source {
             return true
         }
@@ -132,12 +175,17 @@ struct MumbleAudioInputDeviceResolution: Sendable {
 }
 
 protocol MumbleAudioInputDeviceCatalog: Sendable {
-    func inputDevices() throws -> [MumbleAudioInputDevice]
-    func defaultInputDevice() throws -> MumbleAudioInputDevice?
+    nonisolated func inputDevices() throws -> [MumbleAudioInputDevice]
+    nonisolated func defaultInputDevice() throws -> MumbleAudioInputDevice?
+}
+
+protocol MumbleAudioOutputDeviceCatalog: Sendable {
+    nonisolated func outputDevices() throws -> [MumbleAudioOutputDevice]
+    nonisolated func defaultOutputDevice() throws -> MumbleAudioOutputDevice?
 }
 
 extension MumbleAudioInputDeviceCatalog {
-    func resolveInputDevice(selectedUID: String?) throws -> MumbleAudioInputDeviceResolution {
+    nonisolated func resolveInputDevice(selectedUID: String?) throws -> MumbleAudioInputDeviceResolution {
         let normalizedUID = MumbleAudioInputDeviceSelection.normalizedUID(selectedUID)
         let devices = try inputDevices()
         let defaultDevice = try defaultInputDevice()
@@ -150,13 +198,33 @@ extension MumbleAudioInputDeviceCatalog {
     }
 }
 
-enum MumbleAudioInputDeviceSelection {
-    static func normalizedUID(_ value: String?) -> String? {
+extension MumbleAudioOutputDeviceCatalog {
+    nonisolated func resolveOutputDevice(selectedUID: String?) throws -> MumbleAudioOutputDeviceResolution {
+        let normalizedUID = MumbleAudioDeviceSelection.normalizedUID(selectedUID)
+        let devices = try outputDevices()
+        let defaultDevice = try defaultOutputDevice()
+
+        return MumbleAudioOutputDeviceSelection.resolve(
+            selectedUID: normalizedUID,
+            devices: devices,
+            defaultDevice: defaultDevice
+        )
+    }
+}
+
+enum MumbleAudioDeviceSelection {
+    nonisolated static func normalizedUID(_ value: String?) -> String? {
         let trimmedValue = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmedValue.isEmpty ? nil : trimmedValue
     }
+}
 
-    static func resolve(
+enum MumbleAudioInputDeviceSelection {
+    nonisolated static func normalizedUID(_ value: String?) -> String? {
+        MumbleAudioDeviceSelection.normalizedUID(value)
+    }
+
+    nonisolated static func resolve(
         selectedUID: String?,
         devices: [MumbleAudioInputDevice],
         defaultDevice: MumbleAudioInputDevice?
@@ -187,8 +255,46 @@ enum MumbleAudioInputDeviceSelection {
     }
 }
 
-struct CoreAudioInputDeviceCatalog: MumbleAudioInputDeviceCatalog {
-    func inputDevices() throws -> [MumbleAudioInputDevice] {
+enum MumbleAudioOutputDeviceSelection {
+    nonisolated static func normalizedUID(_ value: String?) -> String? {
+        MumbleAudioDeviceSelection.normalizedUID(value)
+    }
+
+    nonisolated static func resolve(
+        selectedUID: String?,
+        devices: [MumbleAudioOutputDevice],
+        defaultDevice: MumbleAudioOutputDevice?
+    ) -> MumbleAudioOutputDeviceResolution {
+        let normalizedUID = normalizedUID(selectedUID)
+
+        guard let normalizedUID else {
+            return MumbleAudioOutputDeviceResolution(
+                device: defaultDevice,
+                source: .systemDefault,
+                requestedUID: nil
+            )
+        }
+
+        if let selectedDevice = devices.first(where: { $0.uid == normalizedUID }) {
+            return MumbleAudioOutputDeviceResolution(
+                device: selectedDevice,
+                source: .selected,
+                requestedUID: normalizedUID
+            )
+        }
+
+        return MumbleAudioOutputDeviceResolution(
+            device: defaultDevice,
+            source: .missingSelectionFallback,
+            requestedUID: normalizedUID
+        )
+    }
+}
+
+struct CoreAudioInputDeviceCatalog: MumbleAudioInputDeviceCatalog, MumbleAudioOutputDeviceCatalog {
+    nonisolated init() {}
+
+    nonisolated func inputDevices() throws -> [MumbleAudioInputDevice] {
         let defaultDeviceID = try defaultInputDeviceID()
 
         return try allAudioDeviceIDs()
@@ -225,12 +331,54 @@ struct CoreAudioInputDeviceCatalog: MumbleAudioInputDeviceCatalog {
             }
     }
 
-    func defaultInputDevice() throws -> MumbleAudioInputDevice? {
+    nonisolated func defaultInputDevice() throws -> MumbleAudioInputDevice? {
         let defaultDeviceID = try defaultInputDeviceID()
         return try inputDevices().first { $0.audioDeviceID == defaultDeviceID }
     }
 
-    private func allAudioDeviceIDs() throws -> [AudioDeviceID] {
+    nonisolated func outputDevices() throws -> [MumbleAudioOutputDevice] {
+        let defaultDeviceID = try defaultOutputDeviceID()
+
+        return try allAudioDeviceIDs()
+            .compactMap { deviceID -> MumbleAudioOutputDevice? in
+                let hasOutput = try deviceHasChannels(deviceID, scope: kAudioDevicePropertyScopeOutput)
+                guard hasOutput else {
+                    return nil
+                }
+
+                let uid = try stringProperty(kAudioDevicePropertyDeviceUID, deviceID: deviceID)
+                guard !uid.isEmpty else {
+                    return nil
+                }
+
+                let displayName = try stringProperty(kAudioObjectPropertyName, deviceID: deviceID)
+                let hasInput = try deviceHasChannels(deviceID, scope: kAudioDevicePropertyScopeInput)
+                let transportTypeValue = try uint32Property(kAudioDevicePropertyTransportType, deviceID: deviceID)
+
+                return MumbleAudioOutputDevice(
+                    audioDeviceID: deviceID,
+                    uid: uid,
+                    displayName: displayName.isEmpty ? uid : displayName,
+                    hasInput: hasInput,
+                    hasOutput: hasOutput,
+                    isDefaultOutput: deviceID == defaultDeviceID,
+                    transportType: MumbleAudioDeviceTransportType(coreAudioValue: transportTypeValue)
+                )
+            }
+            .sorted { lhs, rhs in
+                if lhs.isDefaultOutput != rhs.isDefaultOutput {
+                    return lhs.isDefaultOutput
+                }
+                return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
+            }
+    }
+
+    nonisolated func defaultOutputDevice() throws -> MumbleAudioOutputDevice? {
+        let defaultDeviceID = try defaultOutputDeviceID()
+        return try outputDevices().first { $0.audioDeviceID == defaultDeviceID }
+    }
+
+    private nonisolated func allAudioDeviceIDs() throws -> [AudioDeviceID] {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDevices,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -265,7 +413,7 @@ struct CoreAudioInputDeviceCatalog: MumbleAudioInputDeviceCatalog {
         return deviceIDs
     }
 
-    private func defaultInputDeviceID() throws -> AudioDeviceID {
+    private nonisolated func defaultInputDeviceID() throws -> AudioDeviceID {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDefaultInputDevice,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -288,7 +436,30 @@ struct CoreAudioInputDeviceCatalog: MumbleAudioInputDeviceCatalog {
         return deviceID
     }
 
-    private func stringProperty(_ selector: AudioObjectPropertySelector, deviceID: AudioDeviceID) throws -> String {
+    private nonisolated func defaultOutputDeviceID() throws -> AudioDeviceID {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var deviceID = AudioDeviceID(kAudioObjectUnknown)
+        var dataSize = UInt32(MemoryLayout<AudioDeviceID>.size)
+        let status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            0,
+            nil,
+            &dataSize,
+            &deviceID
+        )
+        guard status == noErr else {
+            throw CoreAudioInputDeviceCatalogError.coreAudioStatus(status)
+        }
+
+        return deviceID
+    }
+
+    private nonisolated func stringProperty(_ selector: AudioObjectPropertySelector, deviceID: AudioDeviceID) throws -> String {
         var address = AudioObjectPropertyAddress(
             mSelector: selector,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -315,7 +486,7 @@ struct CoreAudioInputDeviceCatalog: MumbleAudioInputDeviceCatalog {
         return value?.takeRetainedValue() as String? ?? ""
     }
 
-    private func uint32Property(_ selector: AudioObjectPropertySelector, deviceID: AudioDeviceID) throws -> UInt32 {
+    private nonisolated func uint32Property(_ selector: AudioObjectPropertySelector, deviceID: AudioDeviceID) throws -> UInt32 {
         var address = AudioObjectPropertyAddress(
             mSelector: selector,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -342,7 +513,7 @@ struct CoreAudioInputDeviceCatalog: MumbleAudioInputDeviceCatalog {
         return value
     }
 
-    private func deviceHasChannels(_ deviceID: AudioDeviceID, scope: AudioObjectPropertyScope) throws -> Bool {
+    private nonisolated func deviceHasChannels(_ deviceID: AudioDeviceID, scope: AudioObjectPropertyScope) throws -> Bool {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyStreamConfiguration,
             mScope: scope,

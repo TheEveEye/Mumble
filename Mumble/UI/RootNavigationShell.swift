@@ -117,6 +117,14 @@ struct RootNavigationShell: View {
         return "\(localKey)\u{0}\(shoutKey)"
     }
 
+    private var playbackConfiguration: String {
+        let preferences = audioPreferences.first
+        let outputVolume = preferences?.outputVolume ?? 1.0
+        let isOutputMuted = preferences?.isOutputMuted ?? false
+        let selectedOutputDeviceUID = AudioPreferences.normalizeOutputDeviceUID(preferences?.selectedOutputDeviceUID) ?? ""
+        return "\(outputVolume)\u{0}\(isOutputMuted)\u{0}\(selectedOutputDeviceUID)"
+    }
+
     var body: some View {
         HSplitView {
             ConsolePane(entries: logEntries, statusText: connectionStatus)
@@ -146,6 +154,13 @@ struct RootNavigationShell: View {
         }
         .onChange(of: hotkeyConfiguration) {
             syncPushToTalkHotkeys()
+        }
+        .onChange(of: playbackConfiguration) {
+            do {
+                try configureAudioPlaybackPreferences()
+            } catch {
+                dependencies.logger.error("Failed to update audio playback preferences: \(error.localizedDescription)")
+            }
         }
         .onChange(of: appearsActive) {
             if appearsActive {
@@ -564,7 +579,8 @@ struct RootNavigationShell: View {
         Task {
             await dependencies.audioPlayback.updatePreferences(
                 outputVolume: audioPreferences.outputVolume,
-                isOutputMuted: audioPreferences.isOutputMuted
+                isOutputMuted: audioPreferences.isOutputMuted,
+                selectedOutputDeviceUID: AudioPreferences.normalizeOutputDeviceUID(audioPreferences.selectedOutputDeviceUID)
             )
         }
     }

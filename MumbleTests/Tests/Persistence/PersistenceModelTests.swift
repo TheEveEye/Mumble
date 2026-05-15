@@ -130,6 +130,18 @@ struct PersistenceModelTests {
     }
 
     @Test
+    func audioPreferencesNormalizeSelectedOutputDeviceUID() {
+        let preferences = AudioPreferences(selectedOutputDeviceUID: "  airpods-output  ")
+
+        #expect(preferences.selectedOutputDeviceUID == "airpods-output")
+
+        preferences.selectedOutputDeviceUID = " \n "
+        preferences.normalize()
+
+        #expect(preferences.selectedOutputDeviceUID == nil)
+    }
+
+    @Test
     func audioPreferencesPersistSelectedInputDeviceUID() throws {
         let controller = try PersistenceController.makeInMemory()
         let context = ModelContext(controller.container)
@@ -140,6 +152,19 @@ struct PersistenceModelTests {
         let fetchedPreferences = try context.fetch(FetchDescriptor<AudioPreferences>())
 
         #expect(fetchedPreferences.first?.selectedInputDeviceUID == "macbook-mic")
+    }
+
+    @Test
+    func audioPreferencesPersistSelectedOutputDeviceUID() throws {
+        let controller = try PersistenceController.makeInMemory()
+        let context = ModelContext(controller.container)
+        let preferences = AudioPreferences(selectedOutputDeviceUID: "airpods-output")
+        context.insert(preferences)
+        try context.save()
+
+        let fetchedPreferences = try context.fetch(FetchDescriptor<AudioPreferences>())
+
+        #expect(fetchedPreferences.first?.selectedOutputDeviceUID == "airpods-output")
     }
 
     @Test

@@ -12,6 +12,7 @@ final class AudioPreferences {
     var isOutputMuted: Bool
     var isNoiseSuppressionEnabled: Bool
     var selectedInputDeviceUID: String?
+    var selectedOutputDeviceUID: String?
     var localPushToTalkKey: String
     var shoutPushToTalkKey: String
 
@@ -25,6 +26,7 @@ final class AudioPreferences {
         isOutputMuted: Bool = false,
         isNoiseSuppressionEnabled: Bool = true,
         selectedInputDeviceUID: String? = nil,
+        selectedOutputDeviceUID: String? = nil,
         localPushToTalkKey: String = "#",
         shoutPushToTalkKey: String = ""
     ) {
@@ -37,6 +39,7 @@ final class AudioPreferences {
         self.isOutputMuted = isOutputMuted
         self.isNoiseSuppressionEnabled = isNoiseSuppressionEnabled
         self.selectedInputDeviceUID = Self.normalizeInputDeviceUID(selectedInputDeviceUID)
+        self.selectedOutputDeviceUID = Self.normalizeOutputDeviceUID(selectedOutputDeviceUID)
         self.localPushToTalkKey = Self.normalizeHotkey(localPushToTalkKey)
         self.shoutPushToTalkKey = Self.normalizeHotkey(shoutPushToTalkKey)
     }
@@ -46,6 +49,7 @@ final class AudioPreferences {
         outputVolume = Self.clamp(outputVolume, range: 0.0 ... 2.0)
         voiceActivationThreshold = Self.clamp(voiceActivationThreshold, range: 0.0 ... 1.0)
         selectedInputDeviceUID = Self.normalizeInputDeviceUID(selectedInputDeviceUID)
+        selectedOutputDeviceUID = Self.normalizeOutputDeviceUID(selectedOutputDeviceUID)
         localPushToTalkKey = Self.normalizeHotkey(localPushToTalkKey)
         shoutPushToTalkKey = Self.normalizeHotkey(shoutPushToTalkKey)
     }
@@ -65,5 +69,9 @@ final class AudioPreferences {
     static func normalizeInputDeviceUID(_ value: String?) -> String? {
         let trimmedValue = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmedValue.isEmpty ? nil : trimmedValue
+    }
+
+    static func normalizeOutputDeviceUID(_ value: String?) -> String? {
+        normalizeInputDeviceUID(value)
     }
 }

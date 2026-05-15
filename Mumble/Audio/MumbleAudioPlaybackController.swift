@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import AudioToolbox
 
 struct MumbleAudioSessionContext {
     let currentSessionID: UInt32?
@@ -10,6 +11,7 @@ struct MumbleAudioSessionContext {
 
 actor MumbleAudioPlaybackController {
     private let logger: AppLogger
+    private let outputDeviceCatalog: any MumbleAudioOutputDeviceCatalog
     private let engine = AVAudioEngine()
     private let outputFormat = AVAudioFormat(
         commonFormat: .pcmFormatFloat32,
@@ -29,20 +31,36 @@ actor MumbleAudioPlaybackController {
     private var hasStartedEngine = false
     private var outputVolume: Float = 1.0
     private var isOutputMuted = false
+    private var selectedOutputDeviceUID: String?
     private var receivedVoicePacketCount = 0
     private var rejectedVoicePacketCount = 0
     private var scheduledBufferCount = 0
 
-    init(logger: AppLogger) {
+    init(
+        logger: AppLogger,
+        outputDeviceCatalog: any MumbleAudioOutputDeviceCatalog = CoreAudioInputDeviceCatalog()
+    ) {
         self.logger = logger
+        self.outputDeviceCatalog = outputDeviceCatalog
     }
 
-    func updatePreferences(outputVolume: Double, isOutputMuted: Bool) {
+    func updatePreferences(outputVolume: Double, isOutputMuted: Bool, selectedOutputDeviceUID: String?) {
+        let normalizedOutputDeviceUID = MumbleAudioOutputDeviceSelection.normalizedUID(selectedOutputDeviceUID)
+        let didChangeOutputDevice = self.selectedOutputDeviceUID != normalizedOutputDeviceUID
+
         self.outputVolume = Float(min(max(outputVolume, 0), 2))
         self.isOutputMuted = isOutputMuted
+        self.selectedOutputDeviceUID = normalizedOutputDeviceUID
         engine.mainMixerNode.outputVolume = isOutputMuted ? 0 : self.outputVolume
+
+        if didChangeOutputDevice, hasStartedEngine {
+            resetPlaybackPipeline()
+        }
+
         logger.info(
-            "Audio playback preferences updated: muted=\(isOutputMuted), volume=\(String(format: "%.2f", self.outputVolume))"
+            "Audio playback preferences updated: muted=\(isOutputMuted), " +
+            "volume=\(String(format: "%.2f", self.outputVolume)), " +
+            "outputDevice=\(normalizedOutputDeviceUID ?? "system-default")"
         )
     }
 
@@ -121,15 +139,7 @@ actor MumbleAudioPlaybackController {
     }
 
     func stop() {
-        for sessionID in Array(playerNodes.keys) {
-            removePlaybackResources(for: sessionID)
-        }
-
-        if engine.isRunning {
-            engine.stop()
-        }
-
-        hasStartedEngine = false
+        resetPlaybackPipeline()
         context = MumbleAudioSessionContext(
             currentSessionID: nil,
             activeChannelID: nil,
@@ -144,10 +154,75 @@ actor MumbleAudioPlaybackController {
             return
         }
 
+        configureOutputDevice()
         engine.mainMixerNode.outputVolume = isOutputMuted ? 0 : outputVolume
         try engine.start()
         hasStartedEngine = true
         logger.info("Audio engine started for receive-only playback.")
+    }
+
+    private func configureOutputDevice() {
+        let requestedUID = selectedOutputDeviceUID
+        let resolution: MumbleAudioOutputDeviceResolution
+
+        do {
+            resolution = try outputDeviceCatalog.resolveOutputDevice(selectedUID: requestedUID)
+        } catch {
+            logger.error("Failed to enumerate playback output devices: \(error.localizedDescription). Using the system default output.")
+            return
+        }
+
+        if resolution.didFallbackFromMissingSelection, let requestedUID = resolution.requestedUID {
+            logger.error("Selected playback output \(requestedUID) is not available. Falling back to the system default output.")
+        }
+
+        guard let device = resolution.device else {
+            logger.error("No available playback output device was found. Using AVAudioEngine's default output.")
+            return
+        }
+
+        do {
+            try setEngineOutputDevice(device)
+            logger.info("Using playback output device \"\(device.displayName)\" (\(device.uid)).")
+        } catch {
+            guard requestedUID != nil else {
+                logger.error("Failed to open the system default playback output: \(error.localizedDescription).")
+                return
+            }
+
+            logger.error("Failed to open selected playback output \"\(device.displayName)\": \(error.localizedDescription). Falling back to the system default output.")
+            do {
+                let fallbackResolution = try outputDeviceCatalog.resolveOutputDevice(selectedUID: nil)
+                guard let fallbackDevice = fallbackResolution.device else {
+                    logger.error("No system default playback output is available.")
+                    return
+                }
+
+                try setEngineOutputDevice(fallbackDevice)
+                logger.info("Using fallback playback output device \"\(fallbackDevice.displayName)\" (\(fallbackDevice.uid)).")
+            } catch {
+                logger.error("Failed to open fallback system playback output: \(error.localizedDescription).")
+            }
+        }
+    }
+
+    private func setEngineOutputDevice(_ device: MumbleAudioOutputDevice) throws {
+        guard let audioUnit = engine.outputNode.audioUnit else {
+            throw MumbleAudioPlaybackError.outputAudioUnitUnavailable
+        }
+
+        var deviceID = device.audioDeviceID
+        let status = AudioUnitSetProperty(
+            audioUnit,
+            kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global,
+            0,
+            &deviceID,
+            UInt32(MemoryLayout<AudioDeviceID>.size)
+        )
+        guard status == noErr else {
+            throw MumbleAudioPlaybackError.outputDeviceSelectionFailed(status)
+        }
     }
 
     private func decoder(for sessionID: UInt32) throws -> MumbleOpusDecoder {
@@ -184,6 +259,19 @@ actor MumbleAudioPlaybackController {
         }
 
         decoders.removeValue(forKey: sessionID)
+    }
+
+    private func resetPlaybackPipeline() {
+        for sessionID in Array(playerNodes.keys) {
+            removePlaybackResources(for: sessionID)
+        }
+
+        if engine.isRunning {
+            engine.stop()
+        }
+
+        engine.reset()
+        hasStartedEngine = false
     }
 
     private func logRejectedPacket(reason: PlaybackRejectionReason, packet: MumbleVoicePacket) {
@@ -223,6 +311,8 @@ actor MumbleAudioPlaybackController {
 
 enum MumbleAudioPlaybackError: Error {
     case decoderUnavailable
+    case outputAudioUnitUnavailable
+    case outputDeviceSelectionFailed(OSStatus)
 }
 
 enum PlaybackRejectionReason: String {

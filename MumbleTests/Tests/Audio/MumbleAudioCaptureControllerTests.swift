@@ -147,6 +147,105 @@ struct MumbleAudioCaptureControllerTests {
         #expect(!builtInDevice.usesBluetoothInput)
     }
 
+    @Test
+    func outputDeviceSelectionUsesSystemDefaultForEmptySelection() {
+        let defaultDevice = makeOutputDevice(
+            audioDeviceID: 3,
+            uid: "default-output",
+            displayName: "MacBook Pro Speakers",
+            isDefaultOutput: true,
+            transportType: .builtIn
+        )
+        let selectedDevice = makeOutputDevice(
+            audioDeviceID: 4,
+            uid: "usb-output",
+            displayName: "USB Output",
+            transportType: .usb
+        )
+
+        let resolution = MumbleAudioOutputDeviceSelection.resolve(
+            selectedUID: "",
+            devices: [defaultDevice, selectedDevice],
+            defaultDevice: defaultDevice
+        )
+
+        #expect(resolution.device?.uid == defaultDevice.uid)
+        guard case .systemDefault = resolution.source else {
+            Issue.record("Expected system default output device selection")
+            return
+        }
+        #expect(resolution.requestedUID == nil)
+    }
+
+    @Test
+    func outputDeviceSelectionUsesExactUID() {
+        let defaultDevice = makeOutputDevice(
+            audioDeviceID: 3,
+            uid: "default-output",
+            displayName: "MacBook Pro Speakers",
+            isDefaultOutput: true,
+            transportType: .builtIn
+        )
+        let selectedDevice = makeOutputDevice(
+            audioDeviceID: 4,
+            uid: "airpods-output",
+            displayName: "AirPods",
+            transportType: .bluetooth
+        )
+
+        let resolution = MumbleAudioOutputDeviceSelection.resolve(
+            selectedUID: "airpods-output",
+            devices: [defaultDevice, selectedDevice],
+            defaultDevice: defaultDevice
+        )
+
+        #expect(resolution.device?.uid == selectedDevice.uid)
+        guard case .selected = resolution.source else {
+            Issue.record("Expected exact selected output device")
+            return
+        }
+        #expect(resolution.requestedUID == "airpods-output")
+    }
+
+    @Test
+    func outputDeviceSelectionFallsBackWhenUIDIsMissing() {
+        let defaultDevice = makeOutputDevice(
+            audioDeviceID: 3,
+            uid: "default-output",
+            displayName: "MacBook Pro Speakers",
+            isDefaultOutput: true,
+            transportType: .builtIn
+        )
+
+        let resolution = MumbleAudioOutputDeviceSelection.resolve(
+            selectedUID: "missing-output",
+            devices: [defaultDevice],
+            defaultDevice: defaultDevice
+        )
+
+        #expect(resolution.device?.uid == defaultDevice.uid)
+        guard case .missingSelectionFallback = resolution.source else {
+            Issue.record("Expected missing output selection fallback")
+            return
+        }
+        #expect(resolution.didFallbackFromMissingSelection)
+        #expect(resolution.requestedUID == "missing-output")
+    }
+
+    @Test
+    func outputDevicesCanRepresentOutputOnlyHardware() {
+        let outputOnlyDevice = makeOutputDevice(
+            audioDeviceID: 5,
+            uid: "speakers",
+            displayName: "External Speakers",
+            hasInput: false,
+            transportType: .usb
+        )
+
+        #expect(outputOnlyDevice.hasOutput)
+        #expect(!outputOnlyDevice.hasInput)
+    }
+
     private func makeInputDevice(
         audioDeviceID: AudioDeviceID,
         uid: String,
@@ -161,6 +260,25 @@ struct MumbleAudioCaptureControllerTests {
             hasInput: true,
             hasOutput: false,
             isDefaultInput: isDefaultInput,
+            transportType: transportType
+        )
+    }
+
+    private func makeOutputDevice(
+        audioDeviceID: AudioDeviceID,
+        uid: String,
+        displayName: String,
+        hasInput: Bool = false,
+        isDefaultOutput: Bool = false,
+        transportType: MumbleAudioDeviceTransportType
+    ) -> MumbleAudioOutputDevice {
+        MumbleAudioOutputDevice(
+            audioDeviceID: audioDeviceID,
+            uid: uid,
+            displayName: displayName,
+            hasInput: hasInput,
+            hasOutput: true,
+            isDefaultOutput: isDefaultOutput,
             transportType: transportType
         )
     }
