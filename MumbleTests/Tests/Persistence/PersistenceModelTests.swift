@@ -118,6 +118,31 @@ struct PersistenceModelTests {
     }
 
     @Test
+    func audioPreferencesNormalizeSelectedInputDeviceUID() {
+        let preferences = AudioPreferences(selectedInputDeviceUID: "  built-in-mic  ")
+
+        #expect(preferences.selectedInputDeviceUID == "built-in-mic")
+
+        preferences.selectedInputDeviceUID = " \n "
+        preferences.normalize()
+
+        #expect(preferences.selectedInputDeviceUID == nil)
+    }
+
+    @Test
+    func audioPreferencesPersistSelectedInputDeviceUID() throws {
+        let controller = try PersistenceController.makeInMemory()
+        let context = ModelContext(controller.container)
+        let preferences = AudioPreferences(selectedInputDeviceUID: "macbook-mic")
+        context.insert(preferences)
+        try context.save()
+
+        let fetchedPreferences = try context.fetch(FetchDescriptor<AudioPreferences>())
+
+        #expect(fetchedPreferences.first?.selectedInputDeviceUID == "macbook-mic")
+    }
+
+    @Test
     func recentConnectionTracksDurationAfterDisconnect() {
         let start = Date(timeIntervalSince1970: 1_000)
         let end = start.addingTimeInterval(42)

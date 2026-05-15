@@ -135,6 +135,7 @@ final class MumbleChannelListConnectionHandle {
     private let userMove: (UInt32, UInt32) -> Void
     private let transmitStart: (MumblePushToTalkMode) -> Void
     private let transmitStop: () -> Void
+    private let audioInputPreferencesUpdate: (Double, Bool, String?) -> Void
     private let selfMuteDeafStateUpdate: (Bool, Bool) -> Void
     private let trustDecision: (UUID, Bool, Bool) -> Void
 
@@ -143,6 +144,7 @@ final class MumbleChannelListConnectionHandle {
         userMove: @escaping (UInt32, UInt32) -> Void,
         transmitStart: @escaping (MumblePushToTalkMode) -> Void,
         transmitStop: @escaping () -> Void,
+        audioInputPreferencesUpdate: @escaping (Double, Bool, String?) -> Void,
         selfMuteDeafStateUpdate: @escaping (Bool, Bool) -> Void,
         trustDecision: @escaping (UUID, Bool, Bool) -> Void
     ) {
@@ -150,6 +152,7 @@ final class MumbleChannelListConnectionHandle {
         self.userMove = userMove
         self.transmitStart = transmitStart
         self.transmitStop = transmitStop
+        self.audioInputPreferencesUpdate = audioInputPreferencesUpdate
         self.selfMuteDeafStateUpdate = selfMuteDeafStateUpdate
         self.trustDecision = trustDecision
     }
@@ -168,6 +171,10 @@ final class MumbleChannelListConnectionHandle {
 
     func stopTransmitting() {
         transmitStop()
+    }
+
+    func updateAudioInputPreferences(inputVolume: Double, isMicrophoneMuted: Bool, selectedInputDeviceUID: String?) {
+        audioInputPreferencesUpdate(inputVolume, isMicrophoneMuted, selectedInputDeviceUID)
     }
 
     func setSelfMuteDeafState(isSelfMuted: Bool, isSelfDeafened: Bool) {
@@ -198,6 +205,7 @@ struct MumbleChannelListService: Sendable {
         to target: MumbleConnectionTarget,
         inputVolume: Double,
         isMicrophoneMuted: Bool,
+        selectedInputDeviceUID: String?,
         onEvent: @escaping @Sendable (MumbleChannelListEvent) -> Void
     ) -> MumbleChannelListConnectionHandle {
         let client = MumbleChannelListClient(
@@ -207,6 +215,7 @@ struct MumbleChannelListService: Sendable {
             audioPlayback: audioPlayback,
             inputVolume: inputVolume,
             isMicrophoneMuted: isMicrophoneMuted,
+            selectedInputDeviceUID: selectedInputDeviceUID,
             onEvent: onEvent
         )
         client.start()
@@ -223,6 +232,13 @@ struct MumbleChannelListService: Sendable {
             },
             transmitStop: {
                 client.stopTransmitting()
+            },
+            audioInputPreferencesUpdate: { inputVolume, isMicrophoneMuted, selectedInputDeviceUID in
+                client.updateAudioInputPreferences(
+                    inputVolume: inputVolume,
+                    isMicrophoneMuted: isMicrophoneMuted,
+                    selectedInputDeviceUID: selectedInputDeviceUID
+                )
             },
             selfMuteDeafStateUpdate: { isSelfMuted, isSelfDeafened in
                 client.setSelfMuteDeafState(
@@ -906,8 +922,9 @@ private final class MumbleChannelListClient {
     private var snapshotFlushWorkItem: DispatchWorkItem?
     private var needsChannelSnapshot = false
     private var needsUserSnapshot = false
-    private let inputVolume: Double
-    private let isMicrophoneMuted: Bool
+    private var inputVolume: Double
+    private var isMicrophoneMuted: Bool
+    private var selectedInputDeviceUID: String?
     private lazy var audioCapture = MumbleAudioCaptureController(logger: logger) { [weak self] frame in
         self?.queue.async {
             self?.sendCapturedVoiceFrame(frame)
@@ -921,6 +938,7 @@ private final class MumbleChannelListClient {
         audioPlayback: MumbleAudioPlaybackController,
         inputVolume: Double,
         isMicrophoneMuted: Bool,
+        selectedInputDeviceUID: String?,
         onEvent: @escaping @Sendable (MumbleChannelListEvent) -> Void
     ) {
         self.target = target
@@ -929,9 +947,14 @@ private final class MumbleChannelListClient {
         self.audioPlayback = audioPlayback
         self.inputVolume = inputVolume
         self.isMicrophoneMuted = isMicrophoneMuted
+        self.selectedInputDeviceUID = MumbleAudioInputDeviceSelection.normalizedUID(selectedInputDeviceUID)
         self.onEvent = onEvent
         queue = DispatchQueue(label: "dev.kiwiapps.Mumble.protocol.channel-list.\(UUID().uuidString)")
-        audioCapture.updatePreferences(inputVolume: inputVolume, isMicrophoneMuted: isMicrophoneMuted)
+        audioCapture.updatePreferences(
+            inputVolume: inputVolume,
+            isMicrophoneMuted: isMicrophoneMuted,
+            selectedInputDeviceUID: selectedInputDeviceUID
+        )
     }
 
     func start() {
@@ -1061,6 +1084,23 @@ private final class MumbleChannelListClient {
         }
     }
 
+    func updateAudioInputPreferences(inputVolume: Double, isMicrophoneMuted: Bool, selectedInputDeviceUID: String?) {
+        queue.async { [weak self] in
+            guard let self else {
+                return
+            }
+
+            self.inputVolume = inputVolume
+            self.isMicrophoneMuted = isMicrophoneMuted
+            self.selectedInputDeviceUID = MumbleAudioInputDeviceSelection.normalizedUID(selectedInputDeviceUID)
+            self.audioCapture.updatePreferences(
+                inputVolume: inputVolume,
+                isMicrophoneMuted: isMicrophoneMuted,
+                selectedInputDeviceUID: selectedInputDeviceUID
+            )
+        }
+    }
+
     private func startTransmittingInternal(mode: MumblePushToTalkMode) {
         guard !hasFinished else {
             return
@@ -1160,7 +1200,11 @@ private final class MumbleChannelListClient {
         undecodedVoiceTransportCount = 0
         sentVoicePacketCount = 0
         stopTransmittingInternal()
-        audioCapture.updatePreferences(inputVolume: inputVolume, isMicrophoneMuted: isMicrophoneMuted)
+        audioCapture.updatePreferences(
+            inputVolume: inputVolume,
+            isMicrophoneMuted: isMicrophoneMuted,
+            selectedInputDeviceUID: selectedInputDeviceUID
+        )
         Task { await self.audioPlayback.stop() }
 
         let connection = makeConnection()

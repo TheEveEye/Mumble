@@ -1,5 +1,6 @@
 import Foundation
 @preconcurrency import AVFoundation
+import AudioToolbox
 
 struct MumbleTransmitAudioFrame: Sendable {
     let frameNumber: UInt64
@@ -54,6 +55,7 @@ struct MumbleTransmitFrameSequencer: Sendable {
 final class MumbleAudioCaptureController: @unchecked Sendable {
     private let logger: AppLogger
     private let onEncodedFrame: @Sendable (MumbleTransmitAudioFrame) -> Void
+    private let inputDeviceCatalog: any MumbleAudioInputDeviceCatalog
     private let processingQueue = DispatchQueue(label: "dev.kiwiapps.Mumble.audio.capture")
     private let engine = AVAudioEngine()
     private let targetPCMFormat = AVAudioFormat(
@@ -68,6 +70,7 @@ final class MumbleAudioCaptureController: @unchecked Sendable {
     private var frameSequencer = MumbleTransmitFrameSequencer()
     private var inputVolume: Float = 1.0
     private var isMicrophoneMuted = false
+    private var selectedInputDeviceUID: String?
     private var isTransmitting = false
     private var transmitMode: MumblePushToTalkMode = .localChannel
     private var didInstallTap = false
@@ -76,13 +79,15 @@ final class MumbleAudioCaptureController: @unchecked Sendable {
 
     init(
         logger: AppLogger,
+        inputDeviceCatalog: any MumbleAudioInputDeviceCatalog = CoreAudioInputDeviceCatalog(),
         onEncodedFrame: @escaping @Sendable (MumbleTransmitAudioFrame) -> Void
     ) {
         self.logger = logger
+        self.inputDeviceCatalog = inputDeviceCatalog
         self.onEncodedFrame = onEncodedFrame
     }
 
-    func updatePreferences(inputVolume: Double, isMicrophoneMuted: Bool) {
+    func updatePreferences(inputVolume: Double, isMicrophoneMuted: Bool, selectedInputDeviceUID: String?) {
         processingQueue.async { [weak self] in
             guard let self else {
                 return
@@ -90,6 +95,7 @@ final class MumbleAudioCaptureController: @unchecked Sendable {
 
             self.inputVolume = Float(min(max(inputVolume, 0), 2))
             self.isMicrophoneMuted = isMicrophoneMuted
+            self.selectedInputDeviceUID = MumbleAudioInputDeviceSelection.normalizedUID(selectedInputDeviceUID)
         }
     }
 
@@ -153,6 +159,7 @@ final class MumbleAudioCaptureController: @unchecked Sendable {
         }
 
         do {
+            configureInputDeviceOnQueue()
             try ensureCapturePipelineOnQueue()
             accumulator = MumbleTransmitPCMAccumulator()
             isTransmitting = true
@@ -176,8 +183,7 @@ final class MumbleAudioCaptureController: @unchecked Sendable {
         }
 
         isTransmitting = false
-        sendTerminatorFrameOnQueue()
-        accumulator = MumbleTransmitPCMAccumulator()
+        stopCaptureOnQueue(sendTerminator: true)
         logger.info("Push-to-talk audio capture stopped.")
     }
 
@@ -195,8 +201,74 @@ final class MumbleAudioCaptureController: @unchecked Sendable {
             engine.stop()
         }
 
+        engine.reset()
+        pcmConverter = nil
         accumulator = MumbleTransmitPCMAccumulator()
         failedPCMConversionCount = 0
+    }
+
+    private func configureInputDeviceOnQueue() {
+        let requestedUID = selectedInputDeviceUID
+        let resolution: MumbleAudioInputDeviceResolution
+
+        do {
+            resolution = try inputDeviceCatalog.resolveInputDevice(selectedUID: requestedUID)
+        } catch {
+            logger.error("Failed to enumerate microphone input devices: \(error.localizedDescription). Using the system default input.")
+            return
+        }
+
+        if resolution.didFallbackFromMissingSelection, let requestedUID = resolution.requestedUID {
+            logger.error("Selected microphone \(requestedUID) is not available. Falling back to the system default input for this push-to-talk attempt.")
+        }
+
+        guard let device = resolution.device else {
+            logger.error("No available microphone input device was found. Using AVAudioEngine's default input.")
+            return
+        }
+
+        do {
+            try setEngineInputDeviceOnQueue(device)
+            logger.info("Using microphone input device \"\(device.displayName)\" (\(device.uid)).")
+        } catch {
+            guard requestedUID != nil else {
+                logger.error("Failed to open the system default microphone input: \(error.localizedDescription).")
+                return
+            }
+
+            logger.error("Failed to open selected microphone \"\(device.displayName)\": \(error.localizedDescription). Falling back to the system default input for this push-to-talk attempt.")
+            do {
+                let fallbackResolution = try inputDeviceCatalog.resolveInputDevice(selectedUID: nil)
+                guard let fallbackDevice = fallbackResolution.device else {
+                    logger.error("No system default microphone input is available.")
+                    return
+                }
+
+                try setEngineInputDeviceOnQueue(fallbackDevice)
+                logger.info("Using fallback microphone input device \"\(fallbackDevice.displayName)\" (\(fallbackDevice.uid)).")
+            } catch {
+                logger.error("Failed to open fallback system microphone input: \(error.localizedDescription).")
+            }
+        }
+    }
+
+    private func setEngineInputDeviceOnQueue(_ device: MumbleAudioInputDevice) throws {
+        guard let audioUnit = engine.inputNode.audioUnit else {
+            throw MumbleAudioCaptureError.inputAudioUnitUnavailable
+        }
+
+        var deviceID = device.audioDeviceID
+        let status = AudioUnitSetProperty(
+            audioUnit,
+            kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global,
+            0,
+            &deviceID,
+            UInt32(MemoryLayout<AudioDeviceID>.size)
+        )
+        guard status == noErr else {
+            throw MumbleAudioCaptureError.inputDeviceSelectionFailed(status)
+        }
     }
 
     private func ensureCapturePipelineOnQueue() throws {
@@ -464,4 +536,6 @@ private extension AVAudioFormat {
 
 enum MumbleAudioCaptureError: Error {
     case encoderUnavailable
+    case inputAudioUnitUnavailable
+    case inputDeviceSelectionFailed(OSStatus)
 }

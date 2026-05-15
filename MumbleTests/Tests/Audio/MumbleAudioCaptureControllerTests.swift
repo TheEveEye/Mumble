@@ -1,4 +1,5 @@
 import Foundation
+import CoreAudio
 import Testing
 @testable import Mumble
 
@@ -40,5 +41,127 @@ struct MumbleAudioCaptureControllerTests {
         #expect(firstFrameNumber == 0)
         #expect(secondFrameNumber == 2)
         #expect(sequencer.nextFrameNumber == 4)
+    }
+
+    @Test
+    func inputDeviceSelectionUsesSystemDefaultForEmptySelection() {
+        let defaultDevice = makeInputDevice(
+            audioDeviceID: 1,
+            uid: "default",
+            displayName: "MacBook Pro Microphone",
+            isDefaultInput: true,
+            transportType: .builtIn
+        )
+        let selectedDevice = makeInputDevice(
+            audioDeviceID: 2,
+            uid: "usb",
+            displayName: "USB Microphone",
+            transportType: .usb
+        )
+
+        let resolution = MumbleAudioInputDeviceSelection.resolve(
+            selectedUID: " ",
+            devices: [defaultDevice, selectedDevice],
+            defaultDevice: defaultDevice
+        )
+
+        #expect(resolution.device?.uid == defaultDevice.uid)
+        guard case .systemDefault = resolution.source else {
+            Issue.record("Expected system default device selection")
+            return
+        }
+        #expect(resolution.requestedUID == nil)
+    }
+
+    @Test
+    func inputDeviceSelectionUsesExactUID() {
+        let defaultDevice = makeInputDevice(
+            audioDeviceID: 1,
+            uid: "default",
+            displayName: "MacBook Pro Microphone",
+            isDefaultInput: true,
+            transportType: .builtIn
+        )
+        let selectedDevice = makeInputDevice(
+            audioDeviceID: 2,
+            uid: "airpods",
+            displayName: "AirPods Microphone",
+            transportType: .bluetooth
+        )
+
+        let resolution = MumbleAudioInputDeviceSelection.resolve(
+            selectedUID: "airpods",
+            devices: [defaultDevice, selectedDevice],
+            defaultDevice: defaultDevice
+        )
+
+        #expect(resolution.device?.uid == selectedDevice.uid)
+        guard case .selected = resolution.source else {
+            Issue.record("Expected exact selected device")
+            return
+        }
+        #expect(resolution.requestedUID == "airpods")
+    }
+
+    @Test
+    func inputDeviceSelectionFallsBackWhenUIDIsMissing() {
+        let defaultDevice = makeInputDevice(
+            audioDeviceID: 1,
+            uid: "default",
+            displayName: "MacBook Pro Microphone",
+            isDefaultInput: true,
+            transportType: .builtIn
+        )
+
+        let resolution = MumbleAudioInputDeviceSelection.resolve(
+            selectedUID: "missing",
+            devices: [defaultDevice],
+            defaultDevice: defaultDevice
+        )
+
+        #expect(resolution.device?.uid == defaultDevice.uid)
+        guard case .missingSelectionFallback = resolution.source else {
+            Issue.record("Expected missing selection fallback")
+            return
+        }
+        #expect(resolution.didFallbackFromMissingSelection)
+        #expect(resolution.requestedUID == "missing")
+    }
+
+    @Test
+    func bluetoothInputDevicesAreFlaggedForWarnings() {
+        let bluetoothDevice = makeInputDevice(
+            audioDeviceID: 2,
+            uid: "airpods",
+            displayName: "AirPods Microphone",
+            transportType: .bluetooth
+        )
+        let builtInDevice = makeInputDevice(
+            audioDeviceID: 1,
+            uid: "default",
+            displayName: "MacBook Pro Microphone",
+            transportType: .builtIn
+        )
+
+        #expect(bluetoothDevice.usesBluetoothInput)
+        #expect(!builtInDevice.usesBluetoothInput)
+    }
+
+    private func makeInputDevice(
+        audioDeviceID: AudioDeviceID,
+        uid: String,
+        displayName: String,
+        isDefaultInput: Bool = false,
+        transportType: MumbleAudioDeviceTransportType
+    ) -> MumbleAudioInputDevice {
+        MumbleAudioInputDevice(
+            audioDeviceID: audioDeviceID,
+            uid: uid,
+            displayName: displayName,
+            hasInput: true,
+            hasOutput: false,
+            isDefaultInput: isDefaultInput,
+            transportType: transportType
+        )
     }
 }

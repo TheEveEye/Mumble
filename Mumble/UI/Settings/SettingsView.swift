@@ -7,11 +7,68 @@ struct SettingsView: View {
     @Query private var audioPreferences: [AudioPreferences]
     @AppStorage("inputMonitoringRelaunchRequired") private var inputMonitoringRelaunchRequired = false
     @State private var isInputMonitoringGranted = MumbleGlobalInputMonitor.hasListenEventAccess()
+    @State private var inputDevices: [MumbleAudioInputDevice] = []
+    @State private var inputDeviceLoadFailure: String?
+
+    private let inputDeviceCatalog = CoreAudioInputDeviceCatalog()
 
     var body: some View {
         Group {
             if let preferences = audioPreferences.first {
                 Form {
+                    Section("Audio") {
+                        Picker(
+                            "Input Device",
+                            selection: Binding(
+                                get: { preferences.selectedInputDeviceUID ?? "" },
+                                set: { preferences.selectedInputDeviceUID = AudioPreferences.normalizeInputDeviceUID($0) }
+                            )
+                        ) {
+                            Text("System Default").tag("")
+
+                            if
+                                let selectedUID = preferences.selectedInputDeviceUID,
+                                !inputDevices.contains(where: { $0.uid == selectedUID })
+                            {
+                                Text("Missing Device").tag(selectedUID)
+                            }
+
+                            ForEach(inputDevices) { device in
+                                Text(device.pickerDisplayName).tag(device.uid)
+                            }
+                        }
+
+                        if let selectedBluetoothInputDevice = selectedBluetoothInputDevice(preferences: preferences) {
+                            Label(
+                                "\(selectedBluetoothInputDevice.displayName) is a Bluetooth microphone. macOS may reduce Bluetooth headphone audio quality while this mic is active.",
+                                systemImage: "exclamationmark.triangle"
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                        }
+
+                        HStack {
+                            if let inputDeviceLoadFailure {
+                                Text(inputDeviceLoadFailure)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                Text("Output routing follows the current macOS output device.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            Spacer()
+
+                            Button {
+                                refreshInputDevices()
+                            } label: {
+                                Image(systemName: "arrow.clockwise")
+                            }
+                            .help("Refresh input devices")
+                        }
+                    }
+
                     Section("Push-to-Talk") {
                         HotkeyRecorderField(
                             title: "Linked Channels (Shout)",
@@ -47,6 +104,7 @@ struct SettingsView: View {
                 .frame(width: 520)
                 .onAppear {
                     refreshInputMonitoringStatus()
+                    refreshInputDevices()
                 }
             } else {
                 ProgressView()
@@ -81,6 +139,26 @@ struct SettingsView: View {
         isInputMonitoringGranted = MumbleGlobalInputMonitor.requestListenEventAccess()
         if isInputMonitoringGranted {
             refreshInputMonitoringStatus()
+        }
+    }
+
+    private func refreshInputDevices() {
+        do {
+            inputDevices = try inputDeviceCatalog.inputDevices()
+            inputDeviceLoadFailure = nil
+        } catch {
+            inputDevices = []
+            inputDeviceLoadFailure = "Input devices could not be loaded: \(error.localizedDescription)"
+        }
+    }
+
+    private func selectedBluetoothInputDevice(preferences: AudioPreferences) -> MumbleAudioInputDevice? {
+        guard let selectedInputDeviceUID = preferences.selectedInputDeviceUID else {
+            return nil
+        }
+
+        return inputDevices.first {
+            $0.uid == selectedInputDeviceUID && $0.usesBluetoothInput
         }
     }
 }

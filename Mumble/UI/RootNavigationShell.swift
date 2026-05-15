@@ -329,7 +329,8 @@ struct RootNavigationShell: View {
         channelConnectionHandle = dependencies.channelList.connect(
             to: target,
             inputVolume: audioInputPreferences.inputVolume,
-            isMicrophoneMuted: audioInputPreferences.isMicrophoneMuted
+            isMicrophoneMuted: audioInputPreferences.isMicrophoneMuted,
+            selectedInputDeviceUID: audioInputPreferences.selectedInputDeviceUID
         ) { event in
             Task { @MainActor in
                 guard connectionAttemptID == attemptID else {
@@ -568,17 +569,21 @@ struct RootNavigationShell: View {
         }
     }
 
-    private func currentAudioInputPreferences() -> (inputVolume: Double, isMicrophoneMuted: Bool) {
+    private func currentAudioInputPreferences() -> (inputVolume: Double, isMicrophoneMuted: Bool, selectedInputDeviceUID: String?) {
         do {
             let descriptor = FetchDescriptor<AudioPreferences>()
             guard let audioPreferences = try modelContext.fetch(descriptor).first else {
-                return (1.0, false)
+                return (1.0, false, nil)
             }
 
-            return (audioPreferences.inputVolume, audioPreferences.isMicrophoneMuted)
+            return (
+                audioPreferences.inputVolume,
+                audioPreferences.isMicrophoneMuted,
+                AudioPreferences.normalizeInputDeviceUID(audioPreferences.selectedInputDeviceUID)
+            )
         } catch {
             dependencies.logger.error("Failed to load audio input preferences: \(error.localizedDescription)")
-            return (1.0, false)
+            return (1.0, false, nil)
         }
     }
 
@@ -674,6 +679,12 @@ struct RootNavigationShell: View {
             return
         }
 
+        let audioInputPreferences = currentAudioInputPreferences()
+        channelConnectionHandle?.updateAudioInputPreferences(
+            inputVolume: audioInputPreferences.inputVolume,
+            isMicrophoneMuted: audioInputPreferences.isMicrophoneMuted,
+            selectedInputDeviceUID: audioInputPreferences.selectedInputDeviceUID
+        )
         talkStatesBySessionID[currentSessionID] = mode.talkState
         channelConnectionHandle?.startTransmitting(mode: mode)
     }
