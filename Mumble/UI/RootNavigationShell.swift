@@ -1160,6 +1160,7 @@ private struct CommunicationSidebar: View {
             )
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.regularMaterial)
     }
 }
 
@@ -1221,7 +1222,7 @@ private struct ChatInputBar: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 7)
-        .background(.ultraThinMaterial)
+        .background(Color.clear)
     }
 
     private func send() {
