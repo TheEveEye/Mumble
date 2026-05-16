@@ -282,6 +282,8 @@ private struct ChannelTreeRow: View {
 
                     onJoinChannel(channel)
                 }
+
+                Spacer(minLength: 0)
             case .user:
                 indentationSpacer
 
@@ -292,13 +294,12 @@ private struct ChannelTreeRow: View {
                         talkState: talkStatesBySessionID[user.id] ?? .passive,
                         isCurrentSession: user.id == currentSessionID
                     )
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-
-            Spacer(minLength: 0)
         }
         .padding(.leading, CGFloat(row.depth) * 16 + 8)
-        .padding(.trailing, 8)
+        .padding(.trailing, 0)
         .padding(.vertical, 2)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())

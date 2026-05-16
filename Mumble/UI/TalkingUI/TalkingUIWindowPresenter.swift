@@ -29,7 +29,7 @@ final class TalkingUIWindowPresenter: NSObject, ObservableObject, NSWindowDelega
 
         if shouldBringForward {
             render(snapshot)
-            window?.makeKeyAndOrderFront(nil)
+            window?.orderFrontRegardless()
         }
 
         setVisible(true)
@@ -67,13 +67,17 @@ final class TalkingUIWindowPresenter: NSObject, ObservableObject, NSWindowDelega
 
     private func createWindow(snapshot: TalkingUISnapshot) {
         let hostingController = NSHostingController(rootView: TalkingUIView(snapshot: snapshot.withColumnCount(1)))
-        let window = NSWindow(contentViewController: hostingController)
+        let window = NSPanel(contentViewController: hostingController)
         window.title = "Talking UI"
-        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-        window.level = .normal
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .nonactivatingPanel]
+        window.level = .floating
+        window.isFloatingPanel = true
+        window.hidesOnDeactivate = false
+        window.becomesKeyOnlyIfNeeded = true
         window.collectionBehavior = [.fullScreenAuxiliary]
         window.isReleasedWhenClosed = false
         window.setContentSize(defaultContentSize)
+        window.standardWindowButton(.zoomButton)?.isEnabled = false
         window.delegate = self
         rememberedUnexpandedContentWidth = defaultContentSize.width
 
