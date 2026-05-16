@@ -1,6 +1,11 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+enum MumbleChatTargetSelection: Equatable, Hashable {
+    case channel(UInt32)
+    case user(UInt32)
+}
+
 struct ChannelWorkspaceView: View {
     let server: SavedServer
     let channels: [MumbleChannel]
@@ -9,6 +14,7 @@ struct ChannelWorkspaceView: View {
     let currentSessionID: UInt32?
     let currentSessionChannelID: UInt32?
     let isLoadingChannels: Bool
+    @Binding var selectedChatTarget: MumbleChatTargetSelection?
     let onJoinChannel: (MumbleChannel) -> Void
     let onMoveUser: (UInt32, MumbleChannel) -> Void
     @State private var treeState = ChannelWorkspaceTreeState.empty
@@ -29,6 +35,7 @@ struct ChannelWorkspaceView: View {
                     linkedChannelIDsForCurrentSession: treeState.linkedChannelIDsForCurrentSession,
                     currentSessionID: currentSessionID,
                     currentSessionChannelID: currentSessionChannelID,
+                    selectedChatTarget: $selectedChatTarget,
                     onJoinChannel: onJoinChannel,
                     onMoveUser: onMoveUser
                 )
@@ -148,6 +155,7 @@ private struct ChannelTreeView: View {
     let linkedChannelIDsForCurrentSession: Set<UInt32>
     let currentSessionID: UInt32?
     let currentSessionChannelID: UInt32?
+    @Binding var selectedChatTarget: MumbleChatTargetSelection?
     let onJoinChannel: (MumbleChannel) -> Void
     let onMoveUser: (UInt32, MumbleChannel) -> Void
 
@@ -172,6 +180,7 @@ private struct ChannelTreeView: View {
                         }
                     },
                     currentSessionChannelID: currentSessionChannelID,
+                    selectedChatTarget: $selectedChatTarget,
                     onJoinChannel: onJoinChannel,
                     onMoveUser: onMoveUser
                 )
@@ -245,6 +254,7 @@ private struct ChannelTreeRow: View {
     let linkedChannelIDsForCurrentSession: Set<UInt32>
     let onToggleExpansion: (() -> Void)?
     let currentSessionChannelID: UInt32?
+    @Binding var selectedChatTarget: MumbleChatTargetSelection?
     let onJoinChannel: (MumbleChannel) -> Void
     let onMoveUser: (UInt32, MumbleChannel) -> Void
     @State private var isDropTargeted = false
@@ -255,6 +265,23 @@ private struct ChannelTreeRow: View {
         }
 
         return channel.id != currentSessionChannelID
+    }
+
+    private var chatTargetSelection: MumbleChatTargetSelection? {
+        switch row.kind {
+        case .channel:
+            row.channel.map { .channel($0.id) }
+        case .user:
+            row.user.map { .user($0.id) }
+        }
+    }
+
+    private var isSelectedChatTarget: Bool {
+        guard let chatTargetSelection else {
+            return false
+        }
+
+        return selectedChatTarget == chatTargetSelection
     }
 
     var body: some View {
@@ -305,8 +332,11 @@ private struct ChannelTreeRow: View {
         .contentShape(Rectangle())
         .background(
             RoundedRectangle(cornerRadius: 4)
-                .fill(isDropTargeted ? Color.accentColor.opacity(0.18) : .clear)
+                .fill(rowBackgroundColor)
         )
+        .onTapGesture {
+            selectedChatTarget = chatTargetSelection
+        }
         .contextMenu {
             if let channel = row.channel {
                 Button("Join Channel") {
@@ -321,6 +351,18 @@ private struct ChannelTreeRow: View {
             isDropTargeted: $isDropTargeted,
             onMoveUser: onMoveUser
         ))
+    }
+
+    private var rowBackgroundColor: Color {
+        if isDropTargeted {
+            return Color.accentColor.opacity(0.18)
+        }
+
+        if isSelectedChatTarget {
+            return Color.accentColor.opacity(0.14)
+        }
+
+        return .clear
     }
 
     @ViewBuilder

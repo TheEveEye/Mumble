@@ -86,6 +86,7 @@ enum MumbleUserTalkState: Equatable, Hashable, Sendable {
 
 enum MumbleChannelListEvent: Sendable {
     case log(String)
+    case textMessage(MumbleTextMessage)
     case certificateTrustRequired(MumbleCertificateTrustChallenge)
     case reconnecting(reason: String, attempt: Int, maximumAttempts: Int, delay: TimeInterval)
     case synchronized(welcomeText: String?, currentSessionID: UInt32?)
@@ -94,6 +95,51 @@ enum MumbleChannelListEvent: Sendable {
     case talkStateChanged(sessionID: UInt32, talkState: MumbleUserTalkState)
     case failed(String, MumbleRejectType?)
     case disconnected(String?)
+}
+
+struct MumbleTextMessage: Equatable, Sendable {
+    let actorSessionID: UInt32?
+    let sessionIDs: [UInt32]
+    let channelIDs: [UInt32]
+    let treeIDs: [UInt32]
+    let message: String
+
+    var isPrivate: Bool {
+        !sessionIDs.isEmpty
+    }
+
+    var scope: MumbleTextMessageScope? {
+        if !treeIDs.isEmpty {
+            return .tree
+        }
+
+        if !channelIDs.isEmpty {
+            return .channel
+        }
+
+        if !sessionIDs.isEmpty {
+            return .privateMessage
+        }
+
+        return nil
+    }
+}
+
+enum MumbleTextMessageScope: Equatable, Sendable {
+    case channel
+    case privateMessage
+    case tree
+
+    var displayName: String {
+        switch self {
+        case .channel:
+            return "Channel"
+        case .privateMessage:
+            return "Private"
+        case .tree:
+            return "Tree"
+        }
+    }
 }
 
 struct MumbleCertificateTrustChallenge: Identifiable, Equatable, Sendable {
@@ -137,6 +183,9 @@ enum MumbleRejectType: UInt64, Sendable {
 final class MumbleChannelListConnectionHandle {
     private let cancellation: () -> Void
     private let userMove: (UInt32, UInt32) -> Void
+    private let userTextMessage: (UInt32, String) -> Void
+    private let channelTextMessage: (UInt32, String) -> Void
+    private let channelTreeTextMessage: (UInt32, String) -> Void
     private let transmitStart: (MumblePushToTalkMode) -> Void
     private let transmitStop: () -> Void
     private let audioInputPreferencesUpdate: (Double, Bool, String?) -> Void
@@ -146,6 +195,9 @@ final class MumbleChannelListConnectionHandle {
     init(
         cancellation: @escaping () -> Void,
         userMove: @escaping (UInt32, UInt32) -> Void,
+        userTextMessage: @escaping (UInt32, String) -> Void,
+        channelTextMessage: @escaping (UInt32, String) -> Void,
+        channelTreeTextMessage: @escaping (UInt32, String) -> Void,
         transmitStart: @escaping (MumblePushToTalkMode) -> Void,
         transmitStop: @escaping () -> Void,
         audioInputPreferencesUpdate: @escaping (Double, Bool, String?) -> Void,
@@ -154,6 +206,9 @@ final class MumbleChannelListConnectionHandle {
     ) {
         self.cancellation = cancellation
         self.userMove = userMove
+        self.userTextMessage = userTextMessage
+        self.channelTextMessage = channelTextMessage
+        self.channelTreeTextMessage = channelTreeTextMessage
         self.transmitStart = transmitStart
         self.transmitStop = transmitStop
         self.audioInputPreferencesUpdate = audioInputPreferencesUpdate
@@ -167,6 +222,18 @@ final class MumbleChannelListConnectionHandle {
 
     func joinChannel(sessionID: UInt32, channelID: UInt32) {
         userMove(sessionID, channelID)
+    }
+
+    func sendUserTextMessage(sessionID: UInt32, message: String) {
+        userTextMessage(sessionID, message)
+    }
+
+    func sendChannelTextMessage(channelID: UInt32, message: String) {
+        channelTextMessage(channelID, message)
+    }
+
+    func sendChannelTreeTextMessage(channelID: UInt32, message: String) {
+        channelTreeTextMessage(channelID, message)
     }
 
     func startTransmitting(mode: MumblePushToTalkMode) {
@@ -230,6 +297,15 @@ struct MumbleChannelListService: Sendable {
             },
             userMove: { sessionID, channelID in
                 client.moveUser(sessionID: sessionID, to: channelID)
+            },
+            userTextMessage: { sessionID, message in
+                client.sendUserTextMessage(sessionID: sessionID, message: message)
+            },
+            channelTextMessage: { channelID, message in
+                client.sendChannelTextMessage(channelID: channelID, message: message)
+            },
+            channelTreeTextMessage: { channelID, message in
+                client.sendChannelTreeTextMessage(channelID: channelID, message: message)
             },
             transmitStart: { mode in
                 client.startTransmitting(mode: mode)
@@ -371,6 +447,30 @@ enum MumbleSessionPayloads {
         var payload = Data()
         MumbleProtobufWire.appendBoolField(9, value: isSelfMuted, to: &payload)
         MumbleProtobufWire.appendBoolField(10, value: isSelfDeafened, to: &payload)
+        return payload
+    }
+
+    static func textMessagePacket(
+        sessionIDs: [UInt32] = [],
+        channelIDs: [UInt32] = [],
+        treeIDs: [UInt32] = [],
+        message: String
+    ) -> Data {
+        var payload = Data()
+
+        for sessionID in sessionIDs {
+            MumbleProtobufWire.appendVarintField(2, value: UInt64(sessionID), to: &payload)
+        }
+
+        for channelID in channelIDs {
+            MumbleProtobufWire.appendVarintField(3, value: UInt64(channelID), to: &payload)
+        }
+
+        for treeID in treeIDs {
+            MumbleProtobufWire.appendVarintField(4, value: UInt64(treeID), to: &payload)
+        }
+
+        MumbleProtobufWire.appendStringField(5, value: message, to: &payload)
         return payload
     }
 
@@ -829,6 +929,81 @@ enum MumbleSessionMessageDecoder {
         return MumblePermissionDeniedMessage(reason: reason)
     }
 
+    static func decodeTextMessage(from data: Data) -> MumbleTextMessage? {
+        let payload = data[...]
+        var index = payload.startIndex
+
+        var actorSessionID: UInt32?
+        var sessionIDs: [UInt32] = []
+        var channelIDs: [UInt32] = []
+        var treeIDs: [UInt32] = []
+        var message: String?
+
+        while index < payload.endIndex {
+            guard let key = MumbleProtobufWire.decodeVarint(from: payload, index: &index) else {
+                return nil
+            }
+
+            let fieldNumber = key >> 3
+            let wireType = key & 0x07
+
+            switch (fieldNumber, wireType) {
+            case (1, 0):
+                guard let value = MumbleProtobufWire.decodeVarint(from: payload, index: &index) else {
+                    return nil
+                }
+
+                actorSessionID = UInt32(exactly: value)
+            case (2, 0):
+                guard let value = MumbleProtobufWire.decodeVarint(from: payload, index: &index) else {
+                    return nil
+                }
+
+                if let sessionID = UInt32(exactly: value) {
+                    sessionIDs.append(sessionID)
+                }
+            case (3, 0):
+                guard let value = MumbleProtobufWire.decodeVarint(from: payload, index: &index) else {
+                    return nil
+                }
+
+                if let channelID = UInt32(exactly: value) {
+                    channelIDs.append(channelID)
+                }
+            case (4, 0):
+                guard let value = MumbleProtobufWire.decodeVarint(from: payload, index: &index) else {
+                    return nil
+                }
+
+                if let treeID = UInt32(exactly: value) {
+                    treeIDs.append(treeID)
+                }
+            case (5, 2):
+                guard let value = MumbleProtobufWire.decodeLengthDelimited(from: payload, index: &index) else {
+                    return nil
+                }
+
+                message = String(decoding: value, as: UTF8.self)
+            default:
+                guard MumbleProtobufWire.skipField(wireType: wireType, payload: payload, index: &index) else {
+                    return nil
+                }
+            }
+        }
+
+        guard let message else {
+            return nil
+        }
+
+        return MumbleTextMessage(
+            actorSessionID: actorSessionID,
+            sessionIDs: sessionIDs,
+            channelIDs: channelIDs,
+            treeIDs: treeIDs,
+            message: message
+        )
+    }
+
     static func decodeCryptSetup(from data: Data) -> MumbleCryptSetupMessage? {
         let payload = data[...]
         var index = payload.startIndex
@@ -1012,6 +1187,18 @@ private final class MumbleChannelListClient {
         }
     }
 
+    func sendUserTextMessage(sessionID: UInt32, message: String) {
+        sendTextMessage(sessionIDs: [sessionID], channelIDs: [], treeIDs: [], message: message)
+    }
+
+    func sendChannelTextMessage(channelID: UInt32, message: String) {
+        sendTextMessage(sessionIDs: [], channelIDs: [channelID], treeIDs: [], message: message)
+    }
+
+    func sendChannelTreeTextMessage(channelID: UInt32, message: String) {
+        sendTextMessage(sessionIDs: [], channelIDs: [], treeIDs: [channelID], message: message)
+    }
+
     func setSelfMuteDeafState(isSelfMuted: Bool, isSelfDeafened: Bool) {
         queue.async { [weak self] in
             guard let self, !hasFinished else {
@@ -1028,6 +1215,34 @@ private final class MumbleChannelListClient {
                 payload: MumbleSessionPayloads.selfMuteDeafStatePacket(
                     isSelfMuted: isSelfMuted,
                     isSelfDeafened: isSelfDeafened
+                )
+            )
+        }
+    }
+
+    private func sendTextMessage(
+        sessionIDs: [UInt32],
+        channelIDs: [UInt32],
+        treeIDs: [UInt32],
+        message: String
+    ) {
+        queue.async { [weak self] in
+            guard let self, !hasFinished else {
+                return
+            }
+
+            guard currentSessionID != nil else {
+                logger.error("Ignoring text message before synchronization for \(target.endpointDescription)")
+                return
+            }
+
+            sendMessage(
+                type: .textMessage,
+                payload: MumbleSessionPayloads.textMessagePacket(
+                    sessionIDs: sessionIDs,
+                    channelIDs: channelIDs,
+                    treeIDs: treeIDs,
+                    message: message
                 )
             )
         }
@@ -1678,6 +1893,12 @@ private final class MumbleChannelListClient {
         case .permissionDenied:
             let permissionDenied = MumbleSessionMessageDecoder.decodePermissionDenied(from: payload)
             emit(.log(permissionDenied?.reason ?? "Permission denied."))
+        case .textMessage:
+            guard let textMessage = MumbleSessionMessageDecoder.decodeTextMessage(from: payload) else {
+                return
+            }
+
+            emit(.textMessage(textMessage))
         case .userState:
             guard let userState = MumbleSessionMessageDecoder.decodeUserState(from: payload) else {
                 return

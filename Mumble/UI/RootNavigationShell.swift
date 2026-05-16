@@ -26,6 +26,7 @@ struct RootNavigationShell: View {
         ConsoleEntry(message: "Welcome to Mumble.", rendering: .plain)
     ]
     @State private var chatDraft = ""
+    @State private var selectedChatTarget: MumbleChatTargetSelection?
     @State private var channelConnectionHandle: MumbleChannelListConnectionHandle?
     @State private var channelSnapshot: [MumbleChannel] = []
     @State private var userSnapshot: [MumbleUser] = []
@@ -88,6 +89,24 @@ struct RootNavigationShell: View {
 
     private var canUpdateSelfMuteDeafState: Bool {
         connectedServerID != nil && channelConnectionHandle != nil && currentSessionUser != nil
+    }
+
+    private var canSendChatMessage: Bool {
+        resolvedChatTarget != nil
+    }
+
+    private var resolvedChatTarget: MumbleResolvedChatTarget? {
+        guard channelConnectionHandle != nil else {
+            return nil
+        }
+
+        return MumbleChatTargetResolver.resolve(
+            selection: selectedChatTarget,
+            currentSessionID: currentSessionID,
+            currentChannelID: currentSessionUser?.channelID,
+            channels: channelSnapshot,
+            users: userSnapshot
+        )
     }
 
     private var canCurrentSessionTransmitVoice: Bool {
@@ -224,6 +243,7 @@ struct RootNavigationShell: View {
             CommunicationSidebar(
                 logEntries: logEntries,
                 chatDraft: $chatDraft,
+                canSendMessage: canSendChatMessage,
                 onSendChatMessage: sendChatMessage
             )
             .navigationSplitViewColumnWidth(min: 260, ideal: 280, max: 320)
@@ -236,6 +256,7 @@ struct RootNavigationShell: View {
                 currentSessionID: currentSessionID,
                 currentSessionChannelID: currentSessionUser?.channelID,
                 isLoadingChannels: isLoadingChannels,
+                selectedChatTarget: $selectedChatTarget,
                 onJoinChannel: joinChannel,
                 onMoveUser: moveUser(sessionID:to:)
             )
@@ -397,6 +418,7 @@ struct RootNavigationShell: View {
             recentTalkers.clear()
             currentSessionID = nil
             optimisticSelfMuteDeafState = nil
+            selectedChatTarget = nil
             isLoadingChannels = false
             synchronizeTalkingUIWindow()
             Task { await dependencies.audioPlayback.stop() }
@@ -418,6 +440,7 @@ struct RootNavigationShell: View {
         recentTalkers.clear()
         currentSessionID = nil
         optimisticSelfMuteDeafState = nil
+        selectedChatTarget = nil
         isLoadingChannels = false
         synchronizeTalkingUIWindow()
 
@@ -438,11 +461,59 @@ struct RootNavigationShell: View {
 
     private func sendChatMessage(_ message: String) {
         let trimmedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedMessage.isEmpty else {
+        guard
+            !trimmedMessage.isEmpty,
+            let channelConnectionHandle,
+            let target = resolvedChatTarget
+        else {
             return
         }
 
-        appendLog("You: \(trimmedMessage)")
+        let escapedMessage = MumbleChatMessageFormatter.htmlEscapedPlainText(trimmedMessage)
+
+        switch target {
+        case .channel(let channel):
+            channelConnectionHandle.sendChannelTextMessage(channelID: channel.id, message: escapedMessage)
+        case .user(let user):
+            channelConnectionHandle.sendUserTextMessage(sessionID: user.id, message: escapedMessage)
+        }
+
+        appendLog(
+            "To \(MumbleChatMessageFormatter.escapedHTML(target.displayName)): \(escapedMessage)",
+            rendering: .html
+        )
+    }
+
+    private func appendTextMessage(_ message: MumbleTextMessage) {
+        let actorName = message.actorSessionID
+            .flatMap { sessionID in userSnapshot.first(where: { $0.id == sessionID })?.name }
+            ?? "Server"
+        let escapedActorName = MumbleChatMessageFormatter.escapedHTML(actorName)
+        let prefix: String
+        if let scope = message.scope {
+            prefix = "(\(scope.displayName)) \(escapedActorName)"
+        } else {
+            prefix = escapedActorName
+        }
+
+        appendLog("\(prefix): \(message.message)", rendering: .html)
+    }
+
+    private func reconcileSelectedChatTarget() {
+        guard let selectedChatTarget else {
+            return
+        }
+
+        switch selectedChatTarget {
+        case .channel(let channelID):
+            if channelSnapshot.contains(where: { $0.id == channelID }) == false {
+                self.selectedChatTarget = nil
+            }
+        case .user(let sessionID):
+            if userSnapshot.contains(where: { $0.id == sessionID }) == false {
+                self.selectedChatTarget = nil
+            }
+        }
     }
 
     private func startConnection(to server: SavedServer, password: String? = nil) {
@@ -463,6 +534,7 @@ struct RootNavigationShell: View {
         recentTalkers.clear()
         currentSessionID = nil
         optimisticSelfMuteDeafState = nil
+        selectedChatTarget = nil
         isLoadingChannels = true
         connectedServerID = serverID
         connectDialogSelectionID = serverID
@@ -519,6 +591,7 @@ struct RootNavigationShell: View {
             isLocalPushToTalkTransmitting = false
             recentTalkers.clear()
             optimisticSelfMuteDeafState = nil
+            selectedChatTarget = nil
             isLoadingChannels = channelSnapshot.isEmpty
             synchronizeTalkingUIWindow()
             appendLog(reason)
@@ -540,6 +613,7 @@ struct RootNavigationShell: View {
             }
 
             channelSnapshot = channels
+            reconcileSelectedChatTarget()
             isLoadingChannels = false
             synchronizeTalkingUIWindow()
         case .usersUpdated(let users):
@@ -548,6 +622,7 @@ struct RootNavigationShell: View {
             }
 
             userSnapshot = users
+            reconcileSelectedChatTarget()
             recentTalkers.reconcileKnownUsers(users)
             reconcileOptimisticSelfMuteDeafState()
             clearCurrentSessionTalkingStateIfSpeechIsBlocked()
@@ -578,6 +653,8 @@ struct RootNavigationShell: View {
                 retentionSeconds: talkingUIRetentionInterval
             )
             synchronizeTalkingUIWindow(now: now)
+        case .textMessage(let message):
+            appendTextMessage(message)
         case .failed(let reason, let rejectType):
             resetPushToTalk()
             certificateTrustPrompt = nil
@@ -591,6 +668,7 @@ struct RootNavigationShell: View {
             recentTalkers.clear()
             currentSessionID = nil
             optimisticSelfMuteDeafState = nil
+            selectedChatTarget = nil
             isLoadingChannels = false
             synchronizeTalkingUIWindow()
 
@@ -621,6 +699,7 @@ struct RootNavigationShell: View {
             recentTalkers.clear()
             currentSessionID = nil
             optimisticSelfMuteDeafState = nil
+            selectedChatTarget = nil
             isLoadingChannels = false
             synchronizeTalkingUIWindow()
         }
@@ -983,6 +1062,74 @@ struct RootNavigationShell: View {
     }
 }
 
+enum MumbleResolvedChatTarget: Equatable {
+    case channel(MumbleChannel)
+    case user(MumbleUser)
+
+    var displayName: String {
+        switch self {
+        case .channel(let channel):
+            return channel.name
+        case .user(let user):
+            return user.name
+        }
+    }
+}
+
+enum MumbleChatTargetResolver {
+    static func resolve(
+        selection: MumbleChatTargetSelection?,
+        currentSessionID: UInt32?,
+        currentChannelID: UInt32?,
+        channels: [MumbleChannel],
+        users: [MumbleUser]
+    ) -> MumbleResolvedChatTarget? {
+        guard let currentSessionID else {
+            return nil
+        }
+
+        if let selection {
+            switch selection {
+            case .channel(let channelID):
+                if let channel = channels.first(where: { $0.id == channelID }) {
+                    return .channel(channel)
+                }
+            case .user(let sessionID):
+                if sessionID != currentSessionID, let user = users.first(where: { $0.id == sessionID }) {
+                    return .user(user)
+                }
+            }
+        }
+
+        guard
+            let currentChannelID,
+            let currentChannel = channels.first(where: { $0.id == currentChannelID })
+        else {
+            return nil
+        }
+
+        return .channel(currentChannel)
+    }
+}
+
+enum MumbleChatMessageFormatter {
+    static func htmlEscapedPlainText(_ text: String) -> String {
+        escapedHTML(text)
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .replacingOccurrences(of: "\n", with: "<br>")
+    }
+
+    static func escapedHTML(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "'", with: "&#39;")
+    }
+}
+
 private struct ConsoleEntry: Identifiable {
     enum Rendering {
         case plain
@@ -998,6 +1145,7 @@ private struct ConsoleEntry: Identifiable {
 private struct CommunicationSidebar: View {
     let logEntries: [ConsoleEntry]
     @Binding var chatDraft: String
+    let canSendMessage: Bool
     let onSendChatMessage: (String) -> Void
 
     var body: some View {
@@ -1005,7 +1153,11 @@ private struct CommunicationSidebar: View {
             ConsolePane(entries: logEntries)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            ChatInputBar(draft: $chatDraft, onSend: onSendChatMessage)
+            ChatInputBar(
+                draft: $chatDraft,
+                canSendMessage: canSendMessage,
+                onSend: onSendChatMessage
+            )
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -1013,26 +1165,63 @@ private struct CommunicationSidebar: View {
 
 private struct ChatInputBar: View {
     @Binding var draft: String
+    let canSendMessage: Bool
     let onSend: (String) -> Void
+    @State private var isSendButtonHovered = false
 
     private var canSend: Bool {
-        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        canSendMessage && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
             TextField("Message", text: $draft)
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(.plain)
                 .onSubmit(send)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(
+                    Capsule()
+                        .fill(.thinMaterial)
+                        .overlay(
+                            Capsule()
+                                .stroke(.white.opacity(0.28), lineWidth: 1)
+                        )
+                        .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
+                )
 
             Button(action: send) {
-                Image(systemName: "paperplane.fill")
+                ZStack {
+                    Circle()
+                        .fill(
+                            canSend
+                                ? Color.accentColor.opacity(isSendButtonHovered ? 0.95 : 0.82)
+                                : Color.secondary.opacity(0.16)
+                        )
+                        .overlay(
+                            Circle()
+                                .stroke(.white.opacity(canSend ? 0.34 : 0.18), lineWidth: 1)
+                        )
+                        .shadow(
+                            color: canSend ? Color.accentColor.opacity(0.22) : .clear,
+                            radius: 8,
+                            y: 2
+                        )
+
+                    Image(systemName: "paperplane.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(canSend ? .white : .secondary)
+                }
+                .frame(width: 32, height: 32)
             }
+            .buttonStyle(.plain)
             .disabled(!canSend)
             .help("Send Message")
+            .onHover { isSendButtonHovered = $0 }
         }
-        .padding(8)
-        .background(.bar)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 7)
+        .background(.ultraThinMaterial)
     }
 
     private func send() {

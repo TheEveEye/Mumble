@@ -8,6 +8,7 @@ struct ConnectionDetailPlaceholderView: View {
     let currentSessionID: UInt32?
     let currentSessionChannelID: UInt32?
     let isLoadingChannels: Bool
+    @Binding var selectedChatTarget: MumbleChatTargetSelection?
     let onJoinChannel: (MumbleChannel) -> Void
     let onMoveUser: (UInt32, MumbleChannel) -> Void
 
@@ -29,6 +30,7 @@ struct ConnectionDetailPlaceholderView: View {
                         currentSessionID: currentSessionID,
                         currentSessionChannelID: currentSessionChannelID,
                         isLoadingChannels: isLoadingChannels,
+                        selectedChatTarget: $selectedChatTarget,
                         onJoinChannel: onJoinChannel,
                         onMoveUser: onMoveUser
                     )

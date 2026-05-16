@@ -113,6 +113,131 @@ struct MumbleChannelListServiceTests {
     }
 
     @Test
+    func textMessagePacketEncodesChannelTargetAndMessage() {
+        let payload = MumbleSessionPayloads.textMessagePacket(
+            channelIDs: [7],
+            message: "Ready"
+        )
+
+        let fields = decodeTopLevelFields(from: payload)
+
+        #expect(fields.varints[2] == nil)
+        #expect(fields.varints[3] == [7])
+        #expect(fields.varints[4] == nil)
+        #expect(fields.bytes[5]?.first.map { String(decoding: $0, as: UTF8.self) } == "Ready")
+    }
+
+    @Test
+    func textMessagePacketEncodesUserTargetAndTreeTarget() {
+        let userPayload = MumbleSessionPayloads.textMessagePacket(
+            sessionIDs: [42],
+            message: "Private"
+        )
+        let treePayload = MumbleSessionPayloads.textMessagePacket(
+            treeIDs: [9],
+            message: "Tree"
+        )
+
+        let userFields = decodeTopLevelFields(from: userPayload)
+        let treeFields = decodeTopLevelFields(from: treePayload)
+
+        #expect(userFields.varints[2] == [42])
+        #expect(userFields.bytes[5]?.first.map { String(decoding: $0, as: UTF8.self) } == "Private")
+        #expect(treeFields.varints[4] == [9])
+        #expect(treeFields.bytes[5]?.first.map { String(decoding: $0, as: UTF8.self) } == "Tree")
+    }
+
+    @Test
+    func textMessageDecoderParsesActorTargetsAndBody() {
+        var payload = Data()
+        MumbleProtobufWire.appendVarintField(1, value: 42, to: &payload)
+        MumbleProtobufWire.appendVarintField(2, value: 12, to: &payload)
+        MumbleProtobufWire.appendVarintField(3, value: 7, to: &payload)
+        MumbleProtobufWire.appendVarintField(4, value: 9, to: &payload)
+        MumbleProtobufWire.appendStringField(5, value: "<strong>Hello</strong>", to: &payload)
+
+        let decoded = MumbleSessionMessageDecoder.decodeTextMessage(from: payload)
+
+        #expect(decoded?.actorSessionID == 42)
+        #expect(decoded?.sessionIDs == [12])
+        #expect(decoded?.channelIDs == [7])
+        #expect(decoded?.treeIDs == [9])
+        #expect(decoded?.message == "<strong>Hello</strong>")
+        #expect(decoded?.scope == .tree)
+    }
+
+    @Test
+    func chatFormatterEscapesPlainTextForHtmlTransport() {
+        let escaped = MumbleChatMessageFormatter.htmlEscapedPlainText(
+            "<b>Alpha & \"Bravo\"</b>\r\nIt's ready"
+        )
+
+        #expect(escaped == "&lt;b&gt;Alpha &amp; &quot;Bravo&quot;&lt;/b&gt;<br>It&#39;s ready")
+    }
+
+    @Test
+    func chatTargetResolverUsesSelectedUserWhenAvailable() {
+        let channels = [MumbleChannel(id: 7, name: "General", parentID: nil, position: 0, linkedChannelIDs: [])]
+        let users = [
+            makeUser(id: 1, name: "Me", channelID: 7),
+            makeUser(id: 2, name: "Bravo", channelID: 7),
+        ]
+
+        let resolved = MumbleChatTargetResolver.resolve(
+            selection: .user(2),
+            currentSessionID: 1,
+            currentChannelID: 7,
+            channels: channels,
+            users: users
+        )
+
+        #expect(resolved == MumbleResolvedChatTarget.user(users[1]))
+    }
+
+    @Test
+    func chatTargetResolverUsesSelectedChannelWhenAvailable() {
+        let channels = [
+            MumbleChannel(id: 7, name: "General", parentID: nil, position: 0, linkedChannelIDs: []),
+            MumbleChannel(id: 9, name: "Command", parentID: nil, position: 1, linkedChannelIDs: []),
+        ]
+        let users = [makeUser(id: 1, name: "Me", channelID: 7)]
+
+        let resolved = MumbleChatTargetResolver.resolve(
+            selection: .channel(9),
+            currentSessionID: 1,
+            currentChannelID: 7,
+            channels: channels,
+            users: users
+        )
+
+        #expect(resolved == MumbleResolvedChatTarget.channel(channels[1]))
+    }
+
+    @Test
+    func chatTargetResolverFallsBackToCurrentChannelForCurrentUserOrMissingSelection() {
+        let channels = [MumbleChannel(id: 7, name: "General", parentID: nil, position: 0, linkedChannelIDs: [])]
+        let users = [makeUser(id: 1, name: "Me", channelID: 7)]
+
+        let currentUserSelection = MumbleChatTargetResolver.resolve(
+            selection: .user(1),
+            currentSessionID: 1,
+            currentChannelID: 7,
+            channels: channels,
+            users: users
+        )
+        let missingSelection = MumbleChatTargetResolver.resolve(
+            selection: nil,
+            currentSessionID: 1,
+            currentChannelID: 7,
+            channels: channels,
+            users: users
+        )
+
+        #expect(currentUserSelection == MumbleResolvedChatTarget.channel(channels[0]))
+        #expect(missingSelection == MumbleResolvedChatTarget.channel(channels[0]))
+    }
+
+    @Test
     func selfMuteDeafStatePacketEncodesMutedOnlyWithoutSessionID() {
         let payload = MumbleSessionPayloads.selfMuteDeafStatePacket(
             isSelfMuted: true,
