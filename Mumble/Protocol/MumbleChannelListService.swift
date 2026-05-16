@@ -70,6 +70,10 @@ struct MumbleUser: Identifiable, Equatable, Hashable, Sendable {
 
         return registeredUserID > 0
     }
+
+    var canTransmitVoice: Bool {
+        !isServerMuted && !isServerDeafened && !isSuppressed && !isSelfMuted && !isSelfDeafened
+    }
 }
 
 enum MumbleUserTalkState: Equatable, Hashable, Sendable {
@@ -1119,8 +1123,13 @@ private final class MumbleChannelListClient {
             return
         }
 
-        guard users[currentSessionID]?.channelID != nil else {
+        guard let currentUser = users[currentSessionID], currentUser.channelID != nil else {
             logger.debug("Ignoring push-to-talk before current channel is known for \(target.endpointDescription)")
+            return
+        }
+
+        guard currentUser.canTransmitVoice else {
+            logger.debug("Ignoring push-to-talk while current user cannot transmit voice for \(target.endpointDescription)")
             return
         }
 
@@ -1866,6 +1875,10 @@ private final class MumbleChannelListClient {
 
         users[message.sessionID] = user
         if message.sessionID == currentSessionID {
+            if user.canTransmitVoice == false {
+                stopTransmittingInternal()
+            }
+
             refreshVoiceTargets()
         }
         emitUserSnapshot()

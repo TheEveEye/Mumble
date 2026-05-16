@@ -29,6 +29,8 @@ struct RootNavigationShell: View {
     @State private var channelSnapshot: [MumbleChannel] = []
     @State private var userSnapshot: [MumbleUser] = []
     @State private var talkStatesBySessionID: [UInt32: MumbleUserTalkState] = [:]
+    @State private var recentTalkers = TalkingUIRecentTalkerStore()
+    @State private var talkingUICleanupTick = Date()
     @State private var currentSessionID: UInt32?
     @State private var enteredServerPasswords: [UUID: String] = [:]
     @State private var isLoadingChannels = false
@@ -39,7 +41,14 @@ struct RootNavigationShell: View {
     @State private var localPushToTalkMonitor: Any?
     @State private var globalPushToTalkMonitor: MumbleGlobalInputMonitor?
     @State private var pushToTalkInputController = MumblePushToTalkInputController()
+    @State private var isLocalPushToTalkTransmitting = false
+    @StateObject private var talkingUIPresenter = TalkingUIWindowPresenter()
     @AppStorage("inputMonitoringRelaunchRequired") private var inputMonitoringRelaunchRequired = false
+    @AppStorage(TalkingUISettingsStorage.isShownKey) private var isTalkingUIShown = TalkingUISettingsStorage.defaultIsShown
+    @AppStorage(TalkingUISettingsStorage.retentionSecondsKey) private var talkingUIRetentionSeconds = TalkingUISettingsStorage.defaultRetentionSeconds
+    @AppStorage(TalkingUISettingsStorage.fontSizePercentageKey) private var talkingUIFontSizePercentage = TalkingUISettingsStorage.defaultFontSizePercentage
+    @AppStorage(TalkingUISettingsStorage.alwaysIncludeCurrentUserKey) private var talkingUIAlwaysIncludesCurrentUser = TalkingUISettingsStorage.defaultAlwaysIncludeCurrentUser
+    @AppStorage(TalkingUISettingsStorage.automaticallyExpandsWidthKey) private var talkingUIAutomaticallyExpandsWidth = TalkingUISettingsStorage.defaultAutomaticallyExpandsWidth
     @State private var optimisticSelfMuteDeafState: SelfMuteDeafState?
 
     private var activeServer: SavedServer? {
@@ -58,8 +67,39 @@ struct RootNavigationShell: View {
         return userSnapshot.first(where: { $0.id == currentSessionID })
     }
 
+    private var displayedUserSnapshot: [MumbleUser] {
+        guard let currentSessionID else {
+            return userSnapshot
+        }
+
+        let toolbarState = selfMuteDeafToolbarState
+        return userSnapshot.map { user in
+            guard user.id == currentSessionID else {
+                return user
+            }
+
+            var displayedUser = user
+            displayedUser.isSelfMuted = toolbarState.isSelfMuted
+            displayedUser.isSelfDeafened = toolbarState.isSelfDeafened
+            return displayedUser
+        }
+    }
+
     private var canUpdateSelfMuteDeafState: Bool {
         connectedServerID != nil && channelConnectionHandle != nil && currentSessionUser != nil
+    }
+
+    private var canCurrentSessionTransmitVoice: Bool {
+        guard var currentSessionUser else {
+            return false
+        }
+
+        if let optimisticSelfMuteDeafState {
+            currentSessionUser.isSelfMuted = optimisticSelfMuteDeafState.isSelfMuted
+            currentSessionUser.isSelfDeafened = optimisticSelfMuteDeafState.isSelfDeafened
+        }
+
+        return currentSessionUser.canTransmitVoice
     }
 
     private var currentSelfMuteDeafState: SelfMuteDeafState? {
@@ -80,6 +120,46 @@ struct RootNavigationShell: View {
 
     private var isCurrentSessionEffectivelyMuted: Bool {
         selfMuteDeafToolbarState.isEffectivelyMuted
+    }
+
+    private var canToggleTalkingUI: Bool {
+        activeServer != nil
+    }
+
+    private var talkingUIToolbarHelpText: String {
+        talkingUIPresenter.isVisible ? "Close Talking UI" : "Open Talking UI"
+    }
+
+    private var talkingUIToolbarColor: Color {
+        toolbarStatusColor(talkingUIPresenter.isVisible ? Color.accentColor : Color.primary)
+    }
+
+    private var normalizedTalkingUIRetentionSeconds: Int {
+        min(max(talkingUIRetentionSeconds, 1), 30)
+    }
+
+    private var normalizedTalkingUIFontSizePercentage: Int {
+        min(max(talkingUIFontSizePercentage, 75), 150)
+    }
+
+    private var talkingUIRetentionInterval: TimeInterval {
+        TimeInterval(normalizedTalkingUIRetentionSeconds)
+    }
+
+    private var talkingUISnapshot: TalkingUISnapshot {
+        let now = talkingUICleanupTick
+        return TalkingUISnapshot(
+            entries: recentTalkers.visibleEntries(
+                users: displayedUserSnapshot,
+                channels: channelSnapshot,
+                currentSessionID: currentSessionID,
+                alwaysIncludeCurrentUser: talkingUIAlwaysIncludesCurrentUser,
+                now: now
+            ),
+            fontSizePercentage: normalizedTalkingUIFontSizePercentage,
+            automaticallyExpandsWidth: talkingUIAutomaticallyExpandsWidth,
+            columnCount: 1
+        )
     }
 
     private var selfMuteToolbarImageName: String {
@@ -133,7 +213,7 @@ struct RootNavigationShell: View {
             ConnectionDetailPlaceholderView(
                 server: activeServer,
                 channels: channelSnapshot,
-                users: userSnapshot,
+                users: displayedUserSnapshot,
                 talkStatesBySessionID: talkStatesBySessionID,
                 currentSessionID: currentSessionID,
                 currentSessionChannelID: currentSessionUser?.channelID,
@@ -148,12 +228,31 @@ struct RootNavigationShell: View {
                 try configureAudioPlaybackPreferences()
                 syncActiveServer()
                 syncPushToTalkHotkeys()
+                synchronizeTalkingUIWindow()
             } catch {
                 dependencies.logger.error("Failed to bootstrap persistent data: \(error.localizedDescription)")
             }
         }
+        .task {
+            await runTalkingUICleanupLoop()
+        }
         .onChange(of: hotkeyConfiguration) {
             syncPushToTalkHotkeys()
+        }
+        .onChange(of: isTalkingUIShown) {
+            synchronizeTalkingUIWindow()
+        }
+        .onChange(of: talkingUIRetentionSeconds) {
+            synchronizeTalkingUIWindow()
+        }
+        .onChange(of: talkingUIFontSizePercentage) {
+            synchronizeTalkingUIWindow()
+        }
+        .onChange(of: talkingUIAlwaysIncludesCurrentUser) {
+            synchronizeTalkingUIWindow()
+        }
+        .onChange(of: talkingUIAutomaticallyExpandsWidth) {
+            synchronizeTalkingUIWindow()
         }
         .onChange(of: playbackConfiguration) {
             do {
@@ -204,10 +303,16 @@ struct RootNavigationShell: View {
         }
         .frame(minWidth: 900, minHeight: 560)
         .navigationTitle(activeServer?.displayName ?? "Mumble")
+        .onAppear {
+            talkingUIPresenter.visibilityDidChange = { isVisible in
+                isTalkingUIShown = isVisible
+            }
+        }
         .onDisappear {
             removePushToTalkMonitor()
             resetPushToTalk()
             channelConnectionHandle?.cancel()
+            talkingUIPresenter.close(notify: false)
         }
         .toolbar {
             ToolbarItemGroup {
@@ -217,10 +322,14 @@ struct RootNavigationShell: View {
                     Image(systemName: "globe")
                 }
 
-                Button {} label: {
+                Button {
+                    toggleTalkingUI()
+                } label: {
                     Image(systemName: "person.3.fill")
+                        .foregroundStyle(talkingUIToolbarColor)
                 }
-                .disabled(true)
+                .disabled(!canToggleTalkingUI)
+                .help(talkingUIToolbarHelpText)
 
                 Button {
                     toggleSelfMute()
@@ -271,10 +380,13 @@ struct RootNavigationShell: View {
             channelSnapshot = []
             userSnapshot = []
             talkStatesBySessionID = [:]
+            isLocalPushToTalkTransmitting = false
+            recentTalkers.clear()
             currentSessionID = nil
             optimisticSelfMuteDeafState = nil
             isLoadingChannels = false
             connectionStatus = "Not connected"
+            synchronizeTalkingUIWindow()
             Task { await dependencies.audioPlayback.stop() }
             return
         }
@@ -290,10 +402,13 @@ struct RootNavigationShell: View {
         channelSnapshot = []
         userSnapshot = []
         talkStatesBySessionID = [:]
+        isLocalPushToTalkTransmitting = false
+        recentTalkers.clear()
         currentSessionID = nil
         optimisticSelfMuteDeafState = nil
         isLoadingChannels = false
         connectionStatus = "Not connected"
+        synchronizeTalkingUIWindow()
 
         if let connectDialogSelectionID, servers.contains(where: { $0.id == connectDialogSelectionID }) {
             return
@@ -324,12 +439,15 @@ struct RootNavigationShell: View {
         channelSnapshot = []
         userSnapshot = []
         talkStatesBySessionID = [:]
+        isLocalPushToTalkTransmitting = false
+        recentTalkers.clear()
         currentSessionID = nil
         optimisticSelfMuteDeafState = nil
         isLoadingChannels = true
         connectedServerID = serverID
         connectDialogSelectionID = serverID
         connectionStatus = "Connecting to \(serverDisplayName)"
+        synchronizeTalkingUIWindow()
         appendLog("Starting connection to \(serverDisplayName) (\(endpointDescription)).")
 
         let target = MumbleConnectionTarget(
@@ -379,9 +497,12 @@ struct RootNavigationShell: View {
             currentSessionID = nil
             userSnapshot = []
             talkStatesBySessionID = [:]
+            isLocalPushToTalkTransmitting = false
+            recentTalkers.clear()
             optimisticSelfMuteDeafState = nil
             isLoadingChannels = channelSnapshot.isEmpty
             connectionStatus = "Reconnecting to \(serverDisplayName)"
+            synchronizeTalkingUIWindow()
             appendLog(reason)
             appendLog(
                 "Reconnecting to \(serverDisplayName) in \(formattedReconnectDelay(delay)) (attempt \(attempt) of \(maximumAttempts))."
@@ -390,6 +511,7 @@ struct RootNavigationShell: View {
             isLoadingChannels = false
             currentSessionID = synchronizedSessionID
             connectionStatus = "Connected to \(serverDisplayName)"
+            synchronizeTalkingUIWindow()
 
             if let welcomeText, !welcomeText.isEmpty {
                 appendLog("Welcome message:")
@@ -402,23 +524,43 @@ struct RootNavigationShell: View {
 
             channelSnapshot = channels
             isLoadingChannels = false
+            synchronizeTalkingUIWindow()
         case .usersUpdated(let users):
             guard connectedServerID == serverID else {
                 return
             }
 
             userSnapshot = users
+            recentTalkers.reconcileKnownUsers(users)
             reconcileOptimisticSelfMuteDeafState()
+            clearCurrentSessionTalkingStateIfSpeechIsBlocked()
+            synchronizeTalkingUIWindow()
         case .talkStateChanged(let sessionID, let talkState):
             guard connectedServerID == serverID else {
                 return
             }
 
+            let now = Date()
+            if sessionID == currentSessionID, talkState != .passive, canCurrentSessionTransmitVoice == false {
+                clearCurrentSessionTalkingState(now: now, stopTransmitting: true)
+                return
+            }
+
             if talkState == .passive {
                 talkStatesBySessionID.removeValue(forKey: sessionID)
+                if sessionID == currentSessionID {
+                    isLocalPushToTalkTransmitting = false
+                }
             } else {
                 talkStatesBySessionID[sessionID] = talkState
             }
+            recentTalkers.apply(
+                sessionID: sessionID,
+                talkState: talkState,
+                now: now,
+                retentionSeconds: talkingUIRetentionInterval
+            )
+            synchronizeTalkingUIWindow(now: now)
         case .failed(let reason, let rejectType):
             resetPushToTalk()
             certificateTrustPrompt = nil
@@ -428,10 +570,13 @@ struct RootNavigationShell: View {
             channelSnapshot = []
             userSnapshot = []
             talkStatesBySessionID = [:]
+            isLocalPushToTalkTransmitting = false
+            recentTalkers.clear()
             currentSessionID = nil
             optimisticSelfMuteDeafState = nil
             isLoadingChannels = false
             connectionStatus = "Not connected"
+            synchronizeTalkingUIWindow()
 
             if rejectType == .wrongServerPassword || rejectType == .wrongUserPassword {
                 enteredServerPasswords.removeValue(forKey: serverID)
@@ -456,24 +601,65 @@ struct RootNavigationShell: View {
             channelSnapshot = []
             userSnapshot = []
             talkStatesBySessionID = [:]
+            isLocalPushToTalkTransmitting = false
+            recentTalkers.clear()
             currentSessionID = nil
             optimisticSelfMuteDeafState = nil
             isLoadingChannels = false
             connectionStatus = "Not connected"
+            synchronizeTalkingUIWindow()
+        }
+    }
+
+    private func toggleTalkingUI() {
+        guard canToggleTalkingUI else {
+            return
+        }
+
+        isTalkingUIShown.toggle()
+        synchronizeTalkingUIWindow()
+    }
+
+    private func synchronizeTalkingUIWindow(now: Date = Date()) {
+        talkingUICleanupTick = now
+        recentTalkers.cleanupExpired(now: now)
+        recentTalkers.reconcileKnownUsers(userSnapshot)
+
+        guard isTalkingUIShown, canToggleTalkingUI else {
+            talkingUIPresenter.close(notify: false)
+            return
+        }
+
+        talkingUIPresenter.show(snapshot: talkingUISnapshot)
+    }
+
+    private func runTalkingUICleanupLoop() async {
+        while !Task.isCancelled {
+            do {
+                try await Task.sleep(nanoseconds: 500_000_000)
+            } catch {
+                return
+            }
+
+            await MainActor.run {
+                synchronizeTalkingUIWindow()
+            }
         }
     }
 
     private func reconcileOptimisticSelfMuteDeafState() {
-        guard optimisticSelfMuteDeafState != nil else {
+        guard let optimisticSelfMuteDeafState else {
             return
         }
 
-        guard currentSelfMuteDeafState != nil else {
-            optimisticSelfMuteDeafState = nil
+        guard let currentSelfMuteDeafState else {
+            self.optimisticSelfMuteDeafState = nil
             return
         }
 
-        optimisticSelfMuteDeafState = nil
+        if currentSelfMuteDeafState == optimisticSelfMuteDeafState {
+            self.optimisticSelfMuteDeafState = nil
+        }
     }
 
     private func joinChannel(_ channel: MumbleChannel) {
@@ -507,6 +693,8 @@ struct RootNavigationShell: View {
             isSelfMuted: nextIsSelfMuted,
             isSelfDeafened: nextIsSelfDeafened
         )
+        clearCurrentSessionTalkingStateIfSpeechIsBlocked()
+        synchronizeTalkingUIWindow()
         channelConnectionHandle?.setSelfMuteDeafState(
             isSelfMuted: nextIsSelfMuted,
             isSelfDeafened: nextIsSelfDeafened
@@ -525,6 +713,8 @@ struct RootNavigationShell: View {
             isSelfMuted: nextIsSelfMuted,
             isSelfDeafened: nextIsSelfDeafened
         )
+        clearCurrentSessionTalkingStateIfSpeechIsBlocked()
+        synchronizeTalkingUIWindow()
         channelConnectionHandle?.setSelfMuteDeafState(
             isSelfMuted: nextIsSelfMuted,
             isSelfDeafened: nextIsSelfDeafened
@@ -695,22 +885,77 @@ struct RootNavigationShell: View {
             return
         }
 
+        guard canCurrentSessionTransmitVoice else {
+            clearCurrentSessionTalkingState(stopTransmitting: true)
+            return
+        }
+
         let audioInputPreferences = currentAudioInputPreferences()
         channelConnectionHandle?.updateAudioInputPreferences(
             inputVolume: audioInputPreferences.inputVolume,
             isMicrophoneMuted: audioInputPreferences.isMicrophoneMuted,
             selectedInputDeviceUID: audioInputPreferences.selectedInputDeviceUID
         )
+        isLocalPushToTalkTransmitting = true
         talkStatesBySessionID[currentSessionID] = mode.talkState
+        let now = Date()
+        recentTalkers.apply(
+            sessionID: currentSessionID,
+            talkState: mode.talkState,
+            now: now,
+            retentionSeconds: talkingUIRetentionInterval
+        )
+        synchronizeTalkingUIWindow(now: now)
         channelConnectionHandle?.startTransmitting(mode: mode)
     }
 
     private func stopPushToTalk() {
+        let didTransmit = isLocalPushToTalkTransmitting
+        isLocalPushToTalkTransmitting = false
+
         if let currentSessionID {
+            let now = Date()
             talkStatesBySessionID.removeValue(forKey: currentSessionID)
+            if didTransmit {
+                recentTalkers.apply(
+                    sessionID: currentSessionID,
+                    talkState: .passive,
+                    now: now,
+                    retentionSeconds: talkingUIRetentionInterval
+                )
+            }
+            synchronizeTalkingUIWindow(now: now)
         }
 
         channelConnectionHandle?.stopTransmitting()
+    }
+
+    private func clearCurrentSessionTalkingStateIfSpeechIsBlocked() {
+        guard canCurrentSessionTransmitVoice == false else {
+            return
+        }
+
+        clearCurrentSessionTalkingState(stopTransmitting: true)
+    }
+
+    private func clearCurrentSessionTalkingState(now: Date = Date(), stopTransmitting: Bool) {
+        guard let currentSessionID else {
+            isLocalPushToTalkTransmitting = false
+            return
+        }
+
+        let hadTalkingState = isLocalPushToTalkTransmitting || talkStatesBySessionID[currentSessionID] != nil
+        isLocalPushToTalkTransmitting = false
+        talkStatesBySessionID.removeValue(forKey: currentSessionID)
+        recentTalkers.remove(sessionID: currentSessionID)
+
+        if hadTalkingState {
+            synchronizeTalkingUIWindow(now: now)
+        }
+
+        if stopTransmitting, hadTalkingState {
+            channelConnectionHandle?.stopTransmitting()
+        }
     }
 
     private func resetPushToTalk() {

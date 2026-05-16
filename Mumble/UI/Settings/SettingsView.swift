@@ -6,6 +6,11 @@ struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
     @Query private var audioPreferences: [AudioPreferences]
     @AppStorage("inputMonitoringRelaunchRequired") private var inputMonitoringRelaunchRequired = false
+    @AppStorage(TalkingUISettingsStorage.isShownKey) private var isTalkingUIShown = TalkingUISettingsStorage.defaultIsShown
+    @AppStorage(TalkingUISettingsStorage.retentionSecondsKey) private var talkingUIRetentionSeconds = TalkingUISettingsStorage.defaultRetentionSeconds
+    @AppStorage(TalkingUISettingsStorage.fontSizePercentageKey) private var talkingUIFontSizePercentage = TalkingUISettingsStorage.defaultFontSizePercentage
+    @AppStorage(TalkingUISettingsStorage.alwaysIncludeCurrentUserKey) private var talkingUIAlwaysIncludesCurrentUser = TalkingUISettingsStorage.defaultAlwaysIncludeCurrentUser
+    @AppStorage(TalkingUISettingsStorage.automaticallyExpandsWidthKey) private var talkingUIAutomaticallyExpandsWidth = TalkingUISettingsStorage.defaultAutomaticallyExpandsWidth
     @State private var isInputMonitoringGranted = MumbleGlobalInputMonitor.hasListenEventAccess()
     @State private var inputDevices: [MumbleAudioInputDevice] = []
     @State private var outputDevices: [MumbleAudioOutputDevice] = []
@@ -115,6 +120,45 @@ struct SettingsView: View {
                             relaunchRequired: inputMonitoringRelaunchRequired,
                             onRequestAccess: requestInputMonitoringAccess
                         )
+                    }
+
+                    Section("Talking UI") {
+                        Toggle("Show Talking UI", isOn: $isTalkingUIShown)
+
+                        Stepper(
+                            "Keep silent users for \(talkingUIRetentionSeconds) seconds",
+                            value: $talkingUIRetentionSeconds,
+                            in: 1 ... 30
+                        )
+
+                        Slider(
+                            value: Binding(
+                                get: { Double(talkingUIRetentionSeconds) },
+                                set: { talkingUIRetentionSeconds = Int($0.rounded()) }
+                            ),
+                            in: 1 ... 30,
+                            step: 1
+                        )
+
+                        Stepper(
+                            "Relative font size \(talkingUIFontSizePercentage)%",
+                            value: $talkingUIFontSizePercentage,
+                            in: 75 ... 150,
+                            step: 5
+                        )
+
+                        Slider(
+                            value: Binding(
+                                get: { Double(talkingUIFontSizePercentage) },
+                                set: { talkingUIFontSizePercentage = Int($0.rounded()) }
+                            ),
+                            in: 75 ... 150,
+                            step: 5
+                        )
+
+                        Toggle("Always keep local user visible", isOn: $talkingUIAlwaysIncludesCurrentUser)
+
+                        Toggle("Auto-expand width when crowded", isOn: $talkingUIAutomaticallyExpandsWidth)
                     }
                 }
                 .formStyle(.grouped)

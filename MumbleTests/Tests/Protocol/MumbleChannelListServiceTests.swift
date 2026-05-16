@@ -62,6 +62,31 @@ struct MumbleChannelListServiceTests {
     }
 
     @Test
+    func userCanTransmitVoiceOnlyWhenNoMuteOrSuppressionFlagIsSet() {
+        #expect(makeUser(id: 1, name: "Ready", channelID: 1).canTransmitVoice)
+
+        var serverMutedUser = makeUser(id: 2, name: "Server Muted", channelID: 1)
+        serverMutedUser.isServerMuted = true
+        #expect(serverMutedUser.canTransmitVoice == false)
+
+        var serverDeafenedUser = makeUser(id: 3, name: "Server Deafened", channelID: 1)
+        serverDeafenedUser.isServerDeafened = true
+        #expect(serverDeafenedUser.canTransmitVoice == false)
+
+        var suppressedUser = makeUser(id: 4, name: "Suppressed", channelID: 1)
+        suppressedUser.isSuppressed = true
+        #expect(suppressedUser.canTransmitVoice == false)
+
+        var selfMutedUser = makeUser(id: 5, name: "Self Muted", channelID: 1)
+        selfMutedUser.isSelfMuted = true
+        #expect(selfMutedUser.canTransmitVoice == false)
+
+        var selfDeafenedUser = makeUser(id: 6, name: "Self Deafened", channelID: 1)
+        selfDeafenedUser.isSelfDeafened = true
+        #expect(selfDeafenedUser.canTransmitVoice == false)
+    }
+
+    @Test
     func userRemoveDecoderParsesActorReasonAndBan() {
         var payload = Data()
         MumbleProtobufWire.appendVarintField(1, value: 42, to: &payload)
