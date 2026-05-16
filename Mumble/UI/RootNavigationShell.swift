@@ -25,6 +25,7 @@ struct RootNavigationShell: View {
     @State private var logEntries = [
         ConsoleEntry(message: "Welcome to Mumble.", rendering: .plain)
     ]
+    @State private var chatDraft = ""
     @State private var channelConnectionHandle: MumbleChannelListConnectionHandle?
     @State private var channelSnapshot: [MumbleChannel] = []
     @State private var userSnapshot: [MumbleUser] = []
@@ -35,7 +36,6 @@ struct RootNavigationShell: View {
     @State private var enteredServerPasswords: [UUID: String] = [:]
     @State private var isLoadingChannels = false
     @State private var connectionAttemptID = UUID()
-    @State private var connectionStatus = "Not connected"
     @State private var passwordPromptContext: ServerPasswordPromptContext?
     @State private var certificateTrustPrompt: MumbleCertificateTrustChallenge?
     @State private var localPushToTalkMonitor: Any?
@@ -43,6 +43,7 @@ struct RootNavigationShell: View {
     @State private var pushToTalkInputController = MumblePushToTalkInputController()
     @State private var isLocalPushToTalkTransmitting = false
     @StateObject private var talkingUIPresenter = TalkingUIWindowPresenter()
+    @AppStorage("isLogSidebarVisible") private var isCommunicationSidebarVisible = true
     @AppStorage("inputMonitoringRelaunchRequired") private var inputMonitoringRelaunchRequired = false
     @AppStorage(TalkingUISettingsStorage.isShownKey) private var isTalkingUIShown = TalkingUISettingsStorage.defaultIsShown
     @AppStorage(TalkingUISettingsStorage.retentionSecondsKey) private var talkingUIRetentionSeconds = TalkingUISettingsStorage.defaultRetentionSeconds
@@ -134,6 +135,19 @@ struct RootNavigationShell: View {
         toolbarStatusColor(talkingUIPresenter.isVisible ? Color.accentColor : Color.primary)
     }
 
+    private var communicationSidebarColumnVisibility: Binding<NavigationSplitViewVisibility> {
+        Binding {
+            isCommunicationSidebarVisible ? .all : .detailOnly
+        } set: { visibility in
+            switch visibility {
+            case .detailOnly:
+                isCommunicationSidebarVisible = false
+            default:
+                isCommunicationSidebarVisible = true
+            }
+        }
+    }
+
     private var normalizedTalkingUIRetentionSeconds: Int {
         min(max(talkingUIRetentionSeconds, 1), 30)
     }
@@ -206,10 +220,14 @@ struct RootNavigationShell: View {
     }
 
     var body: some View {
-        HSplitView {
-            ConsolePane(entries: logEntries, statusText: connectionStatus)
-                .frame(minWidth: 260, idealWidth: 280, maxWidth: 320)
-
+        NavigationSplitView(columnVisibility: communicationSidebarColumnVisibility) {
+            CommunicationSidebar(
+                logEntries: logEntries,
+                chatDraft: $chatDraft,
+                onSendChatMessage: sendChatMessage
+            )
+            .navigationSplitViewColumnWidth(min: 260, ideal: 280, max: 320)
+        } detail: {
             ConnectionDetailPlaceholderView(
                 server: activeServer,
                 channels: channelSnapshot,
@@ -301,7 +319,7 @@ struct RootNavigationShell: View {
                 )
             }
         }
-        .frame(minWidth: 900, minHeight: 560)
+        .frame(minWidth: 640, minHeight: 320)
         .navigationTitle(activeServer?.displayName ?? "Mumble")
         .onAppear {
             talkingUIPresenter.visibilityDidChange = { isVisible in
@@ -349,11 +367,6 @@ struct RootNavigationShell: View {
                 .disabled(!canUpdateSelfMuteDeafState)
                 .help(selfDeafenToolbarHelpText)
 
-                Button {} label: {
-                    Image(systemName: "message")
-                }
-                .disabled(true)
-
                 SettingsLink {
                     Image(systemName: "gearshape.fill")
                 }
@@ -385,7 +398,6 @@ struct RootNavigationShell: View {
             currentSessionID = nil
             optimisticSelfMuteDeafState = nil
             isLoadingChannels = false
-            connectionStatus = "Not connected"
             synchronizeTalkingUIWindow()
             Task { await dependencies.audioPlayback.stop() }
             return
@@ -407,7 +419,6 @@ struct RootNavigationShell: View {
         currentSessionID = nil
         optimisticSelfMuteDeafState = nil
         isLoadingChannels = false
-        connectionStatus = "Not connected"
         synchronizeTalkingUIWindow()
 
         if let connectDialogSelectionID, servers.contains(where: { $0.id == connectDialogSelectionID }) {
@@ -423,6 +434,15 @@ struct RootNavigationShell: View {
 
     private func appendLog(_ message: String, rendering: ConsoleEntry.Rendering) {
         logEntries.append(ConsoleEntry(message: message, rendering: rendering))
+    }
+
+    private func sendChatMessage(_ message: String) {
+        let trimmedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedMessage.isEmpty else {
+            return
+        }
+
+        appendLog("You: \(trimmedMessage)")
     }
 
     private func startConnection(to server: SavedServer, password: String? = nil) {
@@ -446,7 +466,6 @@ struct RootNavigationShell: View {
         isLoadingChannels = true
         connectedServerID = serverID
         connectDialogSelectionID = serverID
-        connectionStatus = "Connecting to \(serverDisplayName)"
         synchronizeTalkingUIWindow()
         appendLog("Starting connection to \(serverDisplayName) (\(endpointDescription)).")
 
@@ -501,7 +520,6 @@ struct RootNavigationShell: View {
             recentTalkers.clear()
             optimisticSelfMuteDeafState = nil
             isLoadingChannels = channelSnapshot.isEmpty
-            connectionStatus = "Reconnecting to \(serverDisplayName)"
             synchronizeTalkingUIWindow()
             appendLog(reason)
             appendLog(
@@ -510,7 +528,6 @@ struct RootNavigationShell: View {
         case .synchronized(let welcomeText, let synchronizedSessionID):
             isLoadingChannels = false
             currentSessionID = synchronizedSessionID
-            connectionStatus = "Connected to \(serverDisplayName)"
             synchronizeTalkingUIWindow()
 
             if let welcomeText, !welcomeText.isEmpty {
@@ -575,7 +592,6 @@ struct RootNavigationShell: View {
             currentSessionID = nil
             optimisticSelfMuteDeafState = nil
             isLoadingChannels = false
-            connectionStatus = "Not connected"
             synchronizeTalkingUIWindow()
 
             if rejectType == .wrongServerPassword || rejectType == .wrongUserPassword {
@@ -606,7 +622,6 @@ struct RootNavigationShell: View {
             currentSessionID = nil
             optimisticSelfMuteDeafState = nil
             isLoadingChannels = false
-            connectionStatus = "Not connected"
             synchronizeTalkingUIWindow()
         }
     }
@@ -980,35 +995,70 @@ private struct ConsoleEntry: Identifiable {
     let rendering: Rendering
 }
 
-private struct ConsolePane: View {
-    let entries: [ConsoleEntry]
-    let statusText: String
+private struct CommunicationSidebar: View {
+    let logEntries: [ConsoleEntry]
+    @Binding var chatDraft: String
+    let onSendChatMessage: (String) -> Void
 
     var body: some View {
         VStack(spacing: 0) {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 8) {
-                    ForEach(entries) { entry in
-                        ConsoleEntryView(entry: entry)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-                .padding(12)
-            }
+            ConsolePane(entries: logEntries)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            Divider()
-
-            HStack {
-                Text(statusText)
-                    .foregroundStyle(.secondary)
-                Spacer()
-            }
-            .font(.caption)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(.bar)
+            ChatInputBar(draft: $chatDraft, onSend: onSendChatMessage)
         }
-        .background(Color(nsColor: .textBackgroundColor))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct ChatInputBar: View {
+    @Binding var draft: String
+    let onSend: (String) -> Void
+
+    private var canSend: Bool {
+        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            TextField("Message", text: $draft)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit(send)
+
+            Button(action: send) {
+                Image(systemName: "paperplane.fill")
+            }
+            .disabled(!canSend)
+            .help("Send Message")
+        }
+        .padding(8)
+        .background(.bar)
+    }
+
+    private func send() {
+        let message = draft
+        guard canSend else {
+            return
+        }
+
+        onSend(message)
+        draft = ""
+    }
+}
+
+private struct ConsolePane: View {
+    let entries: [ConsoleEntry]
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 8) {
+                ForEach(entries) { entry in
+                    ConsoleEntryView(entry: entry)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .padding(12)
+        }
     }
 }
 
